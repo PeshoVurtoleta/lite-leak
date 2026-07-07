@@ -1,5 +1,14 @@
 # @zakkster/lite-leak
 
+[![npm version](https://img.shields.io/npm/v/@zakkster/lite-leak.svg?style=for-the-badge&color=latest)](https://www.npmjs.com/package/@zakkster/lite-leak)
+![Zero-GC](https://img.shields.io/badge/Zero--GC-Hot%20path-00C853?style=for-the-badge&logo=leaf&logoColor=white)
+[![sponsor](https://img.shields.io/badge/sponsor-PeshoVurtoleta-ea4aaa.svg?logo=github)](https://github.com/sponsors/PeshoVurtoleta)
+[![npm bundle size](https://img.shields.io/bundlephobia/minzip/@zakkster/lite-leak?style=for-the-badge)](https://bundlephobia.com/result?p=@zakkster/lite-leak)
+[![npm downloads](https://img.shields.io/npm/dm/@zakkster/lite-leak?style=for-the-badge&color=blue)](https://www.npmjs.com/package/@zakkster/lite-leak)
+[![npm total downloads](https://img.shields.io/npm/dt/@zakkster/lite-leak?style=for-the-badge&color=blue)](https://www.npmjs.com/package/@zakkster/lite-leak)
+![TypeScript](https://img.shields.io/badge/TypeScript-Types-informational)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](https://opensource.org/licenses/MIT)
+
 **Zero-GC leak diagnostic primitive** for the `@zakkster/lite-*` ecosystem.
 
 `lite-leak` wraps [`@zakkster/lite-cleanup`](https://github.com/PeshoVurtoleta/lite-cleanup) with owner-tree attribution from [`@zakkster/lite-signal`](https://github.com/PeshoVurtoleta/lite-signal) 1.5.0+. Track a target for GC observation; if it survives past its owner's cleanup, you get a structured leak report with the owner path snapshot at track-time.
