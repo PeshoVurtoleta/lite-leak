@@ -1,0 +1,68 @@
+{
+  "name": "@zakkster/lite-leak",
+  "version": "1.0.0",
+  "description": "Zero-GC leak diagnostic for the @zakkster/lite-* ecosystem. Owner-tree attribution via lite-signal; pluggable kernels for classifying leaks.",
+  "type": "module",
+  "main": "./Leak.js",
+  "module": "./Leak.js",
+  "types": "./Leak.d.ts",
+  "exports": {
+    ".": {
+      "types": "./Leak.d.ts",
+      "node": "./Leak.js",
+      "import": "./Leak.js",
+      "default": "./Leak.js"
+    }
+  },
+  "files": [
+    "Leak.js",
+    "Leak.d.ts",
+    "kernels/",
+    "sinks/",
+    "CHANGELOG.md",
+    "llms.txt",
+    "LICENSE",
+    "README.md"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "test:gc": "node --expose-gc --test test/*.test.js"
+  },
+  "keywords": [
+    "leak-detection",
+    "finalization-registry",
+    "diagnostics",
+    "zero-gc",
+    "lite-signal",
+    "owner-tree",
+    "zakkster"
+  ],
+  "author": "Zahary Shinikchiev <shinikchiev@yahoo.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PeshoVurtoleta/lite-leak.git"
+  },
+  "bugs": {
+    "url": "https://github.com/PeshoVurtoleta/lite-leak/issues"
+  },
+  "homepage": "https://github.com/PeshoVurtoleta/lite-leak#readme",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "funding": {
+    "type": "github",
+    "url": "https://github.com/sponsors/PeshoVurtoleta"
+  },
+  "dependencies": {
+    "@zakkster/lite-cleanup": "^1.0.0"
+  },
+  "peerDependencies": {
+    "@zakkster/lite-signal": ">=1.5.0-beta.3 <2.0.0"
+  },
+  "devDependencies": {
+    "@zakkster/lite-signal": "^1.5.0-beta.3",
+    "jsdom": "^29.1.1"
+  }
+}

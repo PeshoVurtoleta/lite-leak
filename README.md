@@ -1,0 +1,550 @@
+# @zakkster/lite-leak
+
+**Zero-GC leak diagnostic primitive** for the `@zakkster/lite-*` ecosystem.
+
+`lite-leak` wraps [`@zakkster/lite-cleanup`](https://github.com/PeshoVurtoleta/lite-cleanup) with owner-tree attribution from [`@zakkster/lite-signal`](https://github.com/PeshoVurtoleta/lite-signal) 1.5.0+. Track a target for GC observation; if it survives past its owner's cleanup, you get a structured leak report with the owner path snapshot at track-time.
+
+**Status:** v1.0.0 -- **stable**. Six detection kernels shipped. Full M2 audit API (`auditByKind`, `auditByOwner`, `remediate`). Four ecosystem sinks (`createTraceSink`, `createGenericSink`, `createProfilerSignalSink`, `createStudioSink`). Retained-heap budget suite. WHY-1.0.md and REJECTED.md ship in-tree. The `lite-leakforge` demo/toolkit product builds on top as a separate package.
+
+- Single-file ESM, no bundled deps, ASCII-only source
+- Auto-untrack via `lite-signal`'s `onCleanup`: any FR-fired collection is *by definition* a target that outlived its owner
+- Owner-path attribution: non-retaining snapshot of `{id, kind}` frames at track-time
+- Opt-in call-site capture via `Error().stack` (dev only)
+- Zero-GC steady state on hot paths
+- Node 20+; browsers with `FinalizationRegistry`
+
+## Install
+
+```sh
+npm i @zakkster/lite-leak
+npm i @zakkster/lite-signal  # peer dep, >=1.5.0
+```
+
+## Concept
+
+The core insight: with `lite-signal`'s owner tree, "clean disposal" is precisely defined. When an effect disposes, `onCleanup` callbacks fire in cascade order. `lite-leak` piggybacks on this: when you `track()` inside an effect body, it registers an `onCleanup` that automatically untracks the handle.
+
+That means the operational definition of "a leak" is: **a tracked target became unreachable, and its owner's cleanup never ran.** The FR safety net catches exactly this case.
+
+```js
+import { createLeakTracker } from '@zakkster/lite-leak';
+import { effect } from '@zakkster/lite-signal';
+
+const tracker = createLeakTracker({
+  onLeak: (report) => {
+    console.warn('LEAK:', report.tag, 'owner path:', report.ownerPath);
+  }
+});
+
+effect(() => {
+  const resource = acquireExpensive();
+  tracker.track(resource, () => releaseExpensive(resource.handle), 'expensive-1');
+  // ...
+});
+// On effect dispose: auto-untrack fires, no leak. Clean.
+
+// vs.
+
+effect(() => {
+  const resource = acquireExpensive();
+  globalCache.set('expensive', resource); // externalized; auto-untrack won't help
+  tracker.track(resource, () => {}, 'expensive-2');
+});
+// If globalCache never releases -- FR eventually fires, onLeak reports.
+```
+
+## Naming note
+
+`untrack` collides with `lite-signal`'s `untrack(fn)` (which suppresses dependency tracking). Different signatures, different concerns. If you import both in the same file, alias one:
+
+```js
+import { untrack as untrackLeak } from '@zakkster/lite-leak';
+import { untrack as untrackDeps } from '@zakkster/lite-signal';
+```
+
+## API
+
+### `VERSION: string`
+
+Package version constant.
+
+### `createLeakTracker(options?) -> tracker`
+
+**Options:**
+
+| Field           | Type                                          | Description                                                                    |
+| --------------- | --------------------------------------------- | ------------------------------------------------------------------------------ |
+| `name`          | `string`                                      | Diagnostics label. Default `'lite-leak'`.                                      |
+| `captureStacks` | `boolean`                                     | Capture `Error().stack` at track time. **Dev only.** Default `false`.          |
+| `onLeak`        | `(report: LeakReport) => void`                | Called on FR path (target GCd without prior untrack, manual or auto).          |
+| `onError`       | `(err: unknown, tag: unknown \| null) => void`| Called if the caller's cleanup throws.                                         |
+
+**Returns:**
+
+```js
+tracker.track(target, cleanup, tag?)  -> handle
+tracker.untrack(handle)               -> void
+tracker.size()                        -> number
+tracker.name                          : string
+```
+
+### `tracker.track(target, cleanup, tag?)`
+
+Register `target` for leak observation.
+
+- When called inside an effect or computed body, automatically wires `onCleanup(() => tracker.untrack(handle))` so the handle is released on owner disposal.
+- When called outside any owner (top-level, inside `createRoot`), the caller is responsible for eventually calling `untrack`.
+
+Returns an opaque handle.
+
+### `tracker.untrack(handle)`
+
+Explicit untrack. Idempotent, null-safe. Cancels the finalizer without running `cleanup` (matches `lite-cleanup` semantics -- see below).
+
+### `tracker.size()`
+
+Live tracked-handle count.
+
+### Module-level `track` / `untrack`
+
+For one-off usage without a leak-report callback, import module-level `track` / `untrack` -- they lazily create a default tracker (name `'lite-leak'`) with no `onLeak`:
+
+```js
+import { track, untrack } from '@zakkster/lite-leak';
+```
+
+## Leak report shape
+
+```ts
+{
+  tag: unknown | null,              // the tag passed to track()
+  ownerPath: readonly OwnerFrame[]  // { id, kind } frames, root-first
+             | null,                // null if track() called outside any owner
+  origin: string | null,            // Error().stack if captureStacks: true, else null
+  kind: 'unknown',                  // reserved for M1 kernels
+  collectedAt: number,              // performance.now() at FR firing
+}
+
+type OwnerFrame = { id: number, kind: 'effect' | 'computed' | 'signal' };
+```
+
+Frames contain only primitives -- the `id` (number) and `kind` (string enum) do NOT retain owner node references. Safe to hold across async boundaries.
+
+## Held-value contract (inherits + extends `lite-cleanup`)
+
+Two rules for `track(target, cleanup, tag)`:
+
+1. **The `cleanup` closure MUST NOT close over `target`.** (Inherited from `lite-cleanup`.)
+2. **The `tag` value MUST NOT close over `target`.** Since tags are retained on the internal record until FR fires or explicit untrack, capturing `target` via the tag defeats finalization the same way as the cleanup rule.
+
+**Wrong:**
+```js
+tracker.track(target, () => target.dispose(), target);  // BOTH RULES VIOLATED
+```
+
+**Right:**
+```js
+const resource = target.resource;
+tracker.track(target, () => resource.release(), 'my-tag-string');
+```
+
+## Semantics quick reference
+
+| Path                                    | Fires cleanup? | Fires onLeak? |
+| --------------------------------------- | -------------- | ------------- |
+| Owner disposal -> auto-untrack fires    | No             | No            |
+| Explicit `tracker.untrack(handle)`      | No             | No            |
+| FR path (target GCd, no prior untrack)  | Yes            | Yes           |
+
+Explicit untrack cancels the FR without running cleanup -- the caller has already handled disposal by other means.
+
+## Zero-GC profile
+
+Measured on Node 22 under `--expose-gc`:
+
+| Path              | Allocations                          |
+| ----------------- | ------------------------------------ |
+| `track()` (no owner) | 1 record (~40 B) + 1 lite-cleanup record |
+| `track()` (in owner) | 1 record + 1 lite-cleanup record + 1 onCleanup closure |
+| `untrack()`          | 0 B                                 |
+| FR callback          | 0 B (reuses record)                 |
+| `size()`             | 0 B                                 |
+
+`track()` in an owner context allocates one small closure for the auto-untrack wiring. This is a one-time cost per track, not a hot-path cost. `untrack` and the FR path are strictly zero-alloc.
+
+## Tests
+
+```sh
+npm test           # basic + non-GC tests
+npm run test:gc    # full suite with --expose-gc
+```
+
+Ten test files:
+
+- `basic.test.js` -- API surface and idempotency
+- `owner-integration.test.js` -- effect/computed/createRoot integration
+- `leak-report.test.js` -- report shape and FR-path semantics
+- `auto-untrack.test.js` -- onCleanup wiring and cascade behavior
+- `capture-stacks.test.js` -- opt-in Error().stack behavior
+- `held-value-contract.test.js` -- FR fires when target unreachable
+- `leak-probe.test.js` -- 4096-cycle size return-to-zero
+- `retained-heap.test.js` -- 10K cycles under budget
+- `race.test.js` -- untrack after enqueue does not double-fire
+- `version.test.js` -- VERSION const matches package.json
+
+## Kernels (M1-a)
+
+Kernels detect specific leak classes. Register them on a tracker; they hook into the FR-refine chain (classifying leak reports) and expose an on-demand `audit()` pass (finding problems pre-FR).
+
+```js
+import { createLeakTracker, createOwnerCascadeOrphanKernel } from '@zakkster/lite-leak';
+import { effect } from '@zakkster/lite-signal';
+
+const tracker = createLeakTracker({
+  onLeak: (r) => console.warn('LEAK:', r.kind, r),
+  onFinding: (f) => console.warn('AUDIT FINDING:', f.kind, f),
+  onWarning: (w) => console.warn('WARNING:', w.kind, w),
+});
+
+const off = tracker.registerKernel(createOwnerCascadeOrphanKernel());
+
+effect(() => {
+  const resource = acquireExpensive();
+  // audit: true opts in to owner-handle retention (dev cost) so kernels
+  // can walk the chain later.
+  tracker.track(resource, () => releaseExpensive(resource.handle), 'expensive-1', { audit: true });
+});
+
+// On demand:
+const findings = tracker.audit();
+if (findings.length > 0) console.warn(findings);
+
+off(); // unregister kernel
+```
+
+### Kernel shape
+
+```js
+{
+  name: 'owner-cascade-orphan',           // unique per tracker
+  patchSurfaces: [],                       // conflict guard
+  priority: 0,                             // ordering weight, default 0
+  install(ctx) { /* wire hooks, patch globals */ },
+  uninstall() { /* restore */ },
+  refine(report, record) { return refinedReport | null }, // FR path
+  audit() { return findings[] },           // pre-FR scan
+}
+```
+
+Kernels are opt-in: `install()` is where they patch anything (globals, DOM). `uninstall()` restores. Kernels claiming the same patch surface trigger `KernelConflictError` at register time.
+
+### Priority ordering
+
+Both the FR-time refine chain and the on-demand audit iterate kernels by descending priority (default 0). Ties broken by registration order (stable sort). This exists so a broad, catch-all kernel registered early doesn't mask a specialised kernel registered later:
+
+```js
+tracker.registerKernel(createGenericFallbackKernel());          // priority 0
+tracker.registerKernel(createOwnerCascadeOrphanKernel());       // priority 0 (default)
+// The generic kernel is tried first; owner-cascade never gets a chance to refine.
+
+// Fix: bump the specialised kernel's priority.
+const specialised = createOwnerCascadeOrphanKernel();
+specialised.priority = 10;
+tracker.registerKernel(specialised);
+tracker.registerKernel(createGenericFallbackKernel());
+// Now owner-cascade wins on cases it can classify; generic catches the rest.
+```
+
+### `onFinding` vs `onWarning` vs `onLeak`
+
+- **`onLeak(report)`** -- terminus of the FR path. Confirmed leak: target GCd without prior untrack. Highest urgency.
+- **`onWarning(finding)`** -- kernel-emitted, pre-FR anomaly. "Something suspicious just happened." Live signal, actionable at development time.
+- **`onFinding(finding)`** -- kernel-emitted, neutral. Used by `audit()` results and by ecosystem sinks (`lite-trace`, `lite-devtools`).
+
+### `createOwnerCascadeOrphanKernel()` (shipped in 0.2.0)
+
+Walks each audited handle's owner chain (via `ownerOf`), compares against the frozen `ownerPath` snapshot at track-time. Findings when the live chain has diverged.
+
+Finding shape:
+
+```js
+{
+  kind: 'owner-cascade-orphan',
+  tag, ownerPath, origin,
+  brokenAt: number,                        // depth where the check failed
+  reason: 'stale' | 'diverged' | 'kind-diverged' | 'truncated',
+  liveFrame: OwnerFrame | null,            // what's actually there now
+  handle: LeakHandle,
+}
+```
+
+Zero global state. No patched globals. Pure library code -- safest possible first kernel.
+
+### `createTimerOrphanKernel({ target?, warnOnNoOwner?, captureStacks?, priority? })` (shipped in 0.3.0)
+
+Patches `setTimeout` / `clearTimeout`, `setInterval` / `clearInterval`, `requestAnimationFrame` / `cancelAnimationFrame` on the target (default `globalThis`). Only the methods that exist on the target are patched — safe to install against partial mocks.
+
+- **Timer set inside effect/computed**: auto-wires `onCleanup` → the corresponding clear/cancel runs on owner disposal. Forgotten cleanup no longer leaks the callback closure.
+- **Timer set outside any owner**: emits `onWarning` at set-time (earliest possible signal). Suppressible via `warnOnNoOwner: false`.
+- **FR-refine path**: classifies leak reports on tracked callback closures as `'timer-orphan'` with `timerKind`, `timerId`, and `wasCleared` (true if the entry was reaped before the FR fired).
+- **Audit path**: enumerates currently-pending timers; findings for module-scope (`no-owner-pending`) and disposed-owner (`owner-disposed-timer-pending`).
+
+```js
+import { createLeakTracker, createTimerOrphanKernel } from '@zakkster/lite-leak';
+import { effect } from '@zakkster/lite-signal';
+
+const tracker = createLeakTracker({
+  onWarning: (w) => console.warn('timer no-owner:', w.origin),
+  onFinding: (f) => console.warn('timer audit:', f.reason),
+});
+tracker.registerKernel(createTimerOrphanKernel({ captureStacks: true }));
+
+effect(() => {
+  setTimeout(() => update(), 100);  // wired via onCleanup, no warning
+});
+
+setTimeout(() => update(), 100);   // WARNING: no-owner-set, at set-time
+```
+
+Warning shape (set-time):
+
+```js
+{
+  kind: 'timer-orphan',
+  reason: 'no-owner-set',
+  timerKind: 'setTimeout' | 'setInterval' | 'requestAnimationFrame',
+  timerId: unknown,           // the underlying timer id
+  origin: string | null,      // captured stack if captureStacks: true
+}
+```
+
+Audit finding shape:
+
+```js
+{
+  kind: 'timer-orphan',
+  reason: 'no-owner-pending' | 'owner-disposed-timer-pending',
+  timerKind, timerId, origin,
+}
+```
+
+Patch surfaces claimed: `['setTimeout', 'setInterval', 'requestAnimationFrame']`. A second timer-orphan kernel on the same tracker triggers `KernelConflictError`.
+
+For testing: pass a mock target via `test/_helpers/clock.js` (`createMockClock()`) and `test/_helpers/raf.js` (`createMockRaf()`), then compose them into a null-prototype target.
+
+
+
+### `createListenerOrphanKernel({ EventTarget?, warnOnNoOwner?, captureStacks?, priority? })` (shipped in 0.5.0)
+
+Patches `EventTarget.prototype.addEventListener` and `removeEventListener`. Listeners added inside an effect/computed body auto-remove on owner cleanup via `onCleanup`. Listeners added outside any owner emit `onWarning` with `{ kind: 'listener-orphan', reason: 'no-owner-set', type, origin }`.
+
+```js
+tracker.registerKernel(createListenerOrphanKernel());
+
+effect(() => {
+  element.addEventListener('click', handler); // auto-removed on dispose
+});
+
+element.addEventListener('click', handler);   // WARNING: no-owner-set
+```
+
+Patch surface: `'EventTarget.addEventListener'`. Refines FR reports on tracked listener records (tag shape `{ kind: 'listener', type }`). No internal enumeration registry — `audit()` returns empty.
+
+### `createObserverOrphanKernel({ target?, warnOnNoOwner?, captureStacks?, priority? })` (shipped in 0.5.0)
+
+Replaces `MutationObserver` / `ResizeObserver` / `IntersectionObserver` constructors on the target (default `globalThis`) with wrappers that instrument `disconnect()` and wire `onCleanup(() => instance.disconnect())` when constructed inside an owner. Only the constructors present on the target are patched.
+
+```js
+tracker.registerKernel(createObserverOrphanKernel());
+
+effect(() => {
+  const mo = new MutationObserver(cb); // disconnect auto-called on dispose
+  mo.observe(el, { childList: true });
+});
+```
+
+Patch surfaces: `'MutationObserver'`, `'ResizeObserver'`, `'IntersectionObserver'`. `audit()` enumerates pending observers with `no-owner-pending` and `owner-disposed-observer-pending` reasons.
+
+### `createDetachedDomKernel({ root?, warnOnDetach?, captureStacks?, priority? })` (shipped in 0.5.0)
+
+Detects DOM nodes that have been detached from the tree without a prior explicit untrack. User-facing `kernel.watch(node, tag?)` opts nodes in. A `MutationObserver` on the configured root (default `document`) catches removals live.
+
+```js
+const kernel = createDetachedDomKernel({ root: document });
+tracker.registerKernel(kernel);
+
+const el = document.getElementById('anchor');
+const handle = kernel.watch(el, 'anchor');
+
+// Later, if el is removed without untrack:
+someParent.removeChild(el);
+// -> onWarning fires: { kind: 'detached-dom', reason: 'detached-without-untrack', tag: 'anchor', origin }
+```
+
+Patch surface: `'detached-dom.root'`. `audit()` walks `node.isConnected` and emits `detached-at-audit` for watched nodes not currently in the tree. Refines FR reports on `dom-node` tagged records.
+
+### `createAsyncRetentionKernel({ target?, warnOnNoOwner?, captureStacks?, priority? })` (shipped in 0.6.0)
+
+Replaces `target.AbortController` (default `globalThis`) with a wrapper. Controllers created inside effect/computed auto-`abort()` on owner disposal via `onCleanup`. Controllers created outside any owner emit `onWarning` at construction time.
+
+```js
+tracker.registerKernel(createAsyncRetentionKernel());
+
+effect(() => {
+  const c = new AbortController();
+  fetch(url, { signal: c.signal });
+  // On effect dispose: c.abort() fires automatically via onCleanup
+});
+```
+
+Patch surface: `'AbortController'`. `audit()` enumerates pending controllers with `no-owner-pending` and `owner-disposed-controller-pending` reasons. Kernel provides `advise(finding)` used by `tracker.remediate()`.
+
+Interoperates with `@zakkster/lite-await`'s structural cleanup contract -- lite-await's own AbortController usage always wires abort into the settlement path, so the kernel never fires on well-behaved lite-await code. The kernel exists to flag manual `new AbortController()` usage that doesn't follow the discipline.
+
+## Audit API (M2)
+
+Three methods on the tracker for querying findings:
+
+```js
+// All findings across all registered kernels
+const all = tracker.audit();
+
+// Filter by kind
+const timers = tracker.auditByKind('timer-orphan');
+
+// Filter by owner (findings whose ownerPath contains the given owner's id)
+import { getOwner } from '@zakkster/lite-signal';
+let owner;
+effect(() => { owner = getOwner(); });
+const inThisEffect = tracker.auditByOwner(owner);
+
+// Get a human-readable advisory for a finding
+const advice = tracker.remediate(finding);
+console.warn(advice);
+```
+
+Kernels can optionally provide `advise(finding)` returning per-reason advisory text. `tracker.remediate()` walks registered kernels in priority-then-registration order asking each for advice; first non-null string wins.
+
+## Ecosystem sinks (M2.5)
+
+Adapters that route lite-leak events into other packages in the ecosystem.
+
+### `createTraceSink({ tracer, leakTagPrefix?, warningTagPrefix?, findingTagPrefix?, errorTag? })`
+
+Routes leak reports, warnings, findings, and errors into `@zakkster/lite-trace` as zero-duration spans. Each event becomes `tracer.begin(tag); tracer.end()` -- a Perfetto-visible instant marker when the trace is exported via `toChromeTrace()`.
+
+```js
+import { Tracer } from '@zakkster/lite-trace';
+import { createLeakTracker, createTraceSink, createTimerOrphanKernel } from '@zakkster/lite-leak';
+
+const tracer = new Tracer(2048);
+const sink = createTraceSink({ tracer });
+const tracker = createLeakTracker({
+  onLeak:    sink.onLeak,
+  onWarning: sink.onWarning,
+  onFinding: sink.onFinding,
+  onError:   sink.onError,
+});
+tracker.registerKernel(createTimerOrphanKernel());
+
+// ... run your app ...
+// Then export the trace with leak events on the timeline:
+const chromeTrace = tracer.toChromeTrace();
+```
+
+### `createGenericSink({ onLeak?, onWarning?, onFinding?, onError? })`
+
+Composable sink adapter for arbitrary destinations (studio panels, observability pipelines). Swallows callback throws. Missing callbacks are no-ops.
+
+```js
+const studio = createGenericSink({
+  onLeak:    (r) => studioPanel.pushLeak(r),
+  onWarning: (w) => studioPanel.pushWarning(w),
+});
+```
+
+To combine multiple sinks, construct each and fan out in the tracker's option callback:
+
+```js
+const trace = createTraceSink({ tracer });
+const studio = createGenericSink({ onLeak: (r) => studioPanel.push(r) });
+const tracker = createLeakTracker({
+  onLeak:    (r) => { trace.onLeak(r); studio.onLeak(r); },
+  onWarning: (w) => trace.onWarning(w),
+  onFinding: (f) => trace.onFinding(f),
+  onError:   (e, t) => trace.onError(e, t),
+});
+```
+
+### `createProfilerSignalSink()` (shipped in 1.0.0)
+
+Lifts leak-event counters into `@zakkster/lite-signal` signals. Bind them to any HUD, dashboard, or effect.
+
+```js
+import { effect } from '@zakkster/lite-signal';
+import { createLeakTracker, createProfilerSignalSink } from '@zakkster/lite-leak';
+
+const sink = createProfilerSignalSink();
+const tracker = createLeakTracker({
+  onLeak:    sink.onLeak,
+  onWarning: sink.onWarning,
+  onFinding: sink.onFinding,
+  onError:   sink.onError,
+});
+
+// Bind to HUD; effect re-runs when counters change.
+effect(() => {
+  hudLeakEl.textContent = 'Leaks: ' + sink.leakCount();
+  hudLastEl.textContent = sink.lastLeakKind() || 'clean';
+});
+```
+
+Signals exposed: `leakCount`, `warningCount`, `findingCount`, `errorCount`, `lastLeakKind`, `lastWarningKind`. Related writes are batched so one event = one effect run. Methods: `reset()`, `dispose()`.
+
+Ghost-safe: creates ~6 signals at construction, never more. Zero per-event graph churn beyond those signal writes. Mirrors the discipline of `@zakkster/lite-profiler-signal`.
+
+### `createStudioSink({ mount?, title?, maxLogRows?, zIndex? })` (shipped in 1.0.0)
+
+DOM overlay in the visual style of `@zakkster/lite-studio` (dark theme, monospace, fixed-position). Rolling log of leak events, warnings, findings, errors, capped at `maxLogRows` (default 60). Companion to lite-studio's main panel; no dependency on lite-studio itself, just visual affinity.
+
+```js
+import { createLeakTracker, createStudioSink } from '@zakkster/lite-leak';
+
+const sink = createStudioSink({ title: 'my-app leaks', maxLogRows: 40 });
+const tracker = createLeakTracker({
+  onLeak:    sink.onLeak,
+  onWarning: sink.onWarning,
+  onFinding: sink.onFinding,
+  onError:   sink.onError,
+});
+
+// ... later, unmount when done
+sink.unmount();
+```
+
+Ghost-safe: no signals, imperative DOM updates only. Options: `mount: false` skips auto-mount at construction (call `sink.mount()` later). `zIndex` overrides the default (2147482999, one below lite-studio's own).
+
+
+## Roadmap
+
+| Version | Milestone | Contents                                                                    |
+| ------- | --------- | --------------------------------------------------------------------------- |
+| 0.1.0   | M0        | Primitive: `createLeakTracker`, `track`, `untrack`, `onLeak` reports.       |
+| 0.2.0   | M1-a      | Kernel infrastructure + `owner-cascade-orphan` kernel.                      |
+| 0.3.0   | M1-b      | + `timer-orphan` (setTimeout/setInterval/rAF).                              |
+| 0.5.0   | M1-c/d/e  | + `listener-orphan`, `observer-orphan`, `detached-dom`.                     |
+| 0.6.0   | M1-f      | + `async-retention` (AbortController).                                      |
+| 0.8.0   | M2        | `auditByKind`, `auditByOwner`, `remediate()` + kernel `advise()`.           |
+| 0.9.0   | M2.5      | `createTraceSink`, `createGenericSink` -- ecosystem sink adapters.          |
+| **1.0.0**   | **M3** | **`createProfilerSignalSink`, `createStudioSink`, retained-heap suite, WHY-1.0.md, REJECTED.md. Stable.** |
+| later   | `lite-leakforge` | Priority-tier demo, oscilloscope scenes, docs (separate package).      |
+
+## Non-goals
+
+- **Not a GC.** FR timing is non-deterministic; leak reports are a diagnostic signal, not a synchronous check.
+- **Not automatic instrumentation.** Consumers explicitly `track()` what they care about. Auto-instrumentation is what the M1 kernels do.
+- **Not a memory profiler.** Different concern -- point-in-time budget checks belong in `lite-gc-profiler` and friends.
+
+## License
+
+MIT (c) Zahary Shinikchiev &lt;shinikchiev@yahoo.com&gt;
