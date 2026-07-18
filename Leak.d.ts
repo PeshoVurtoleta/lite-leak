@@ -208,7 +208,39 @@ export interface TimerOrphanKernelOptions {
   target?: TimerTarget;
   warnOnNoOwner?: boolean;
   captureStacks?: boolean;
+  /**
+   * When false, this kernel does not claim or patch requestAnimationFrame /
+   * cancelAnimationFrame, leaving that surface for the loop-aware
+   * `raf-orphan` kernel. Set false whenever `createRafOrphanKernel()` is
+   * installed on the same tracker. Default true.
+   */
+  handleRaf?: boolean;
   priority?: number;
+}
+
+/**
+ * Emitted via `onFinding` by every patching kernel (`timer-orphan`,
+ * `listener-orphan`, `async-retention`) to report a patch-lifecycle anomaly
+ * rather than a leak.
+ *
+ * Patch claims are scoped to the patch TARGET (a module-level WeakMap), not to
+ * a tracker, so two trackers wrapping the same global are detected. A
+ * contested surface is reported rather than thrown: installing a kernel and
+ * never uninstalling it is a documented, working pattern.
+ *
+ * - `patch-double-install` -- another kernel instance already patched these
+ *   surfaces on this target; both are active, so events are double-counted.
+ * - `patch-layered` -- at uninstall a third party's wrapper sat over ours, so
+ *   it was left in place instead of being destroyed.
+ *
+ * These carry no kernel-specific payload (no `timerKind`, no listener `type`),
+ * which is why they are a separate shape from the leak findings below.
+ */
+export interface PatchLifecycleFinding<T = unknown> extends KernelFinding<T> {
+  readonly kind: 'timer-orphan' | 'listener-orphan' | 'async-retention';
+  readonly reason: 'patch-double-install' | 'patch-layered';
+  readonly surfaces: readonly string[];
+  readonly detail: string;
 }
 
 export interface TimerOrphanFinding<T = unknown> extends KernelFinding<T> {
@@ -315,6 +347,64 @@ export interface AsyncRetentionFinding<T = unknown> extends KernelFinding<T> {
 }
 
 export function createAsyncRetentionKernel(options?: AsyncRetentionKernelOptions): Kernel;
+
+// -----------------------------------------------------------------
+// Kernel: raf-orphan (1.1.0)
+// -----------------------------------------------------------------
+
+/**
+ * Any object exposing the rAF methods to patch. In production this is
+ * typically `globalThis`; in tests a deterministic rAF harness.
+ */
+export interface RafTarget {
+  requestAnimationFrame?: (cb: (t: number) => void) => unknown;
+  cancelAnimationFrame?: (id: unknown) => void;
+}
+
+export interface RafOrphanKernelOptions {
+  target?: RafTarget;
+  /** Emit `no-owner-set` when a loop begins outside any owner. Default true. */
+  warnOnNoOwner?: boolean;
+  /**
+   * Emit `reschedule-after-dispose` when a chain reschedules itself after
+   * its origin owner has been disposed. Default true.
+   */
+  warnOnRescheduleAfterDispose?: boolean;
+  captureStacks?: boolean;
+  priority?: number;
+}
+
+export interface RafOrphanFinding<T = unknown> extends KernelFinding<T> {
+  readonly kind: 'raf-orphan';
+  readonly reason:
+    | 'no-owner-set'
+    | 'reschedule-after-dispose'
+    | 'no-owner-loop-armed'
+    | 'owner-disposed-loop-armed';
+  /** Number of frames the loop has scheduled so far. */
+  readonly frames: number;
+  readonly origin: string | null;
+}
+
+export interface RafOrphanRefinedReport<T = unknown> extends LeakReport<T> {
+  readonly kind: 'raf-orphan';
+  readonly chainId: number;
+  readonly frames: number;
+  readonly wasCleared: boolean;
+}
+
+/**
+ * Loop-aware rAF leak detection. Unlike `timer-orphan` (which treats each
+ * frame as a fire-once timer), this kernel models a self-rescheduling loop
+ * as a chain: the owner captured at the first schedule is inherited by every
+ * continuation, cleanup cancels the frame that is actually armed at
+ * disposal, and one warning is emitted per loop rather than per frame.
+ *
+ * Claims the `requestAnimationFrame` and `cancelAnimationFrame` patch
+ * surfaces. To run alongside `timer-orphan`, construct the latter with
+ * `{ handleRaf: false }`.
+ */
+export function createRafOrphanKernel(options?: RafOrphanKernelOptions): Kernel;
 
 // -----------------------------------------------------------------
 // M2: audit API extensions -- see LeakTracker interface above.

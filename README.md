@@ -13,7 +13,7 @@
 
 `lite-leak` wraps [`@zakkster/lite-cleanup`](https://github.com/PeshoVurtoleta/lite-cleanup) with owner-tree attribution from [`@zakkster/lite-signal`](https://github.com/PeshoVurtoleta/lite-signal) 1.5.0+. Track a target for GC observation; if it survives past its owner's cleanup, you get a structured leak report with the owner path snapshot at track-time.
 
-**Status:** v1.0.0 -- **stable**. Six detection kernels shipped. Full M2 audit API (`auditByKind`, `auditByOwner`, `remediate`). Four ecosystem sinks (`createTraceSink`, `createGenericSink`, `createProfilerSignalSink`, `createStudioSink`). Retained-heap budget suite. WHY-1.0.md and REJECTED.md ship in-tree. The `lite-leakforge` demo/toolkit product builds on top as a separate package.
+**Status:** v1.1.0 -- **stable**. Seven detection kernels shipped (raf-orphan added in 1.1.0). Full M2 audit API (`auditByKind`, `auditByOwner`, `remediate`). Four ecosystem sinks (`createTraceSink`, `createGenericSink`, `createProfilerSignalSink`, `createStudioSink`). Peer matrix validating owner-frame assumptions against the lite-signal 1.8.0 base and the rebuilt 1.9-1.12 line. Retained-heap budget suite. WHY-1.0.md and REJECTED.md ship in-tree. The `lite-leakforge` demo/toolkit product builds on top as a separate package.
 
 - Single-file ESM, no bundled deps, ASCII-only source
 - Auto-untrack via `lite-signal`'s `onCleanup`: any FR-fired collection is *by definition* a target that outlived its owner
@@ -337,7 +337,7 @@ Audit finding shape:
 }
 ```
 
-Patch surfaces claimed: `['setTimeout', 'setInterval', 'requestAnimationFrame']`. A second timer-orphan kernel on the same tracker triggers `KernelConflictError`.
+Patch surfaces claimed: `['setTimeout', 'setInterval', 'requestAnimationFrame']`. A second timer-orphan kernel on the same tracker triggers `KernelConflictError`. Pass `{ handleRaf: false }` to drop `requestAnimationFrame` from the claimed surfaces and hand rAF loops to `createRafOrphanKernel()` (see below).
 
 For testing: pass a mock target via `test/_helpers/clock.js` (`createMockClock()`) and `test/_helpers/raf.js` (`createMockRaf()`), then compose them into a null-prototype target.
 
@@ -409,6 +409,68 @@ effect(() => {
 Patch surface: `'AbortController'`. `audit()` enumerates pending controllers with `no-owner-pending` and `owner-disposed-controller-pending` reasons. Kernel provides `advise(finding)` used by `tracker.remediate()`.
 
 Interoperates with `@zakkster/lite-await`'s structural cleanup contract -- lite-await's own AbortController usage always wires abort into the settlement path, so the kernel never fires on well-behaved lite-await code. The kernel exists to flag manual `new AbortController()` usage that doesn't follow the discipline.
+
+### `createRafOrphanKernel({ target?, warnOnNoOwner?, warnOnRescheduleAfterDispose?, captureStacks?, priority? })` (shipped in 1.1.0)
+
+Loop-aware `requestAnimationFrame` leak detection -- coverage for the single most common leak-prone resource in the ecosystem (every rendering package runs a rAF loop).
+
+`timer-orphan` already patches rAF, but it treats each frame as a fire-once timer. A self-rescheduling loop defeats that: the reschedule `requestAnimationFrame(loop)` runs during the frame callback phase, **outside any owner**, so `timer-orphan` warns on every frame and -- worse -- the cleanup wired at the first schedule cancels the frame id that was live *then*, long since consumed. The loop is now on frame N; the loop leaks forever.
+
+`raf-orphan` models the loop as a **chain**. The owner captured at the first schedule is inherited by every continuation scheduled from inside the chain's own callback (detected via an active-chain window, not a fresh `getOwner()` read, which is `undefined` mid-callback).
+
+```js
+import { createLeakTracker, createRafOrphanKernel } from '@zakkster/lite-leak';
+
+const tracker = createLeakTracker({ onWarning: console.warn });
+tracker.registerKernel(createRafOrphanKernel());
+
+function loop() { draw(); requestAnimationFrame(loop); }
+effect(() => { requestAnimationFrame(loop); });
+// On effect dispose: the CURRENTLY armed frame is cancelled -> loop stops.
+```
+
+- **Auto-cancel that actually stops the loop** -- cancels the frame armed *now*, not at schedule-time.
+- **One warning per loop, not per frame** -- a module-scope loop emits a single `no-owner-set`.
+- **`reschedule-after-dispose`** -- emitted when a chain reschedules after its origin owner disposed (broken cascade, or a callback that disposes its own owner mid-frame then loops on).
+- `audit()`: `no-owner-loop-armed`, `owner-disposed-loop-armed`. `refine()` classifies FR-collected loop callbacks. `advise(finding)` for `tracker.remediate()`.
+
+Patch surfaces claimed: `['requestAnimationFrame', 'cancelAnimationFrame']`. It **conflicts with `timer-orphan`** on the rAF surface by design. To run both, cede rAF from `timer-orphan`:
+
+```js
+tracker.registerKernel(createTimerOrphanKernel({ handleRaf: false }));
+tracker.registerKernel(createRafOrphanKernel());
+```
+
+## Patch-lifecycle findings (all patching kernels)
+
+`registerKernel`'s `patchSurfaces` guard is scoped to one tracker. Two trackers -- an app's and a test harness's, or two bundled copies of the package -- could therefore each wrap the *same* global and neither would complain; whichever uninstalled first restored the pre-first-patch original, silently disabling the other. A leak detector that stops detecting without saying so is the worst failure this package has.
+
+Patch claims are now a property of the **target**, held in a module-level `WeakMap`. `timer-orphan`, `listener-orphan`, and `async-retention` emit two findings via `onFinding`:
+
+| Reason | When | Payload |
+|---|---|---|
+| `patch-double-install` | At install: another kernel instance already patched these surfaces on this target. Both stay active, so events are double-counted. | `surfaces: string[]`, `detail` |
+| `patch-layered` | At uninstall: a third party layered a wrapper over ours, so theirs was **left in place** rather than destroyed. | `surfaces: string[]`, `detail` |
+
+A contested surface is *reported, not thrown* -- installing a kernel and never uninstalling it is a documented, working pattern, so a hard error would reject correct code. Restore is identity-checked, so an APM agent or test framework that wrapped you after install survives your `uninstall()`. Claims are released on uninstall, so install/uninstall cycles stay clean.
+
+```js
+const finding = { kind: 'timer-orphan', reason: 'patch-double-install',
+                  surfaces: ['setTimeout', 'clearTimeout'], detail: '...' };
+```
+
+Note for CI gates: these are `onFinding` events, so a gate that treats *any* finding as a confirmed leak (as `lite-leakforge`'s does) will surface a double-install as a failure. That is intended -- a double-patched global invalidates the run's counts.
+
+## Peer matrix
+
+lite-leak reaches into lite-signal owner-tree internals (the `{id, kind}` frame snapshot, `nodeId()` liveness, `onCleanup` cascade order, `createRoot` detachment). Those are observable but unversioned; a lite-signal release that changes any of them breaks leak attribution silently.
+
+`test/peer-assumptions.test.js` pins every such assumption and banners the resolved lite-signal version. `peers.json` lists the versions the matrix expands over -- the `baseline` (1.8.0 clean base) and `rebuilt-latest` (the latest rebuilt 1.9-1.12 prerelease). `.github/workflows/peer-matrix.yml` fans out over `peers.json` x Node {20, 22} on every push, and via `repository_dispatch: lite-signal-release` so a breaking owner-tree change fails here *before* it ships in lite-signal.
+
+```bash
+npm run test:peers      # against the currently-installed peer
+npm run peers:matrix    # local sweep over every version in peers.json
+```
 
 ## Audit API (M2)
 

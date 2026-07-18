@@ -1,0 +1,697 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>lite-leak // raf-orphan scope</title>
+
+<!--
+  Routes the bare specifiers through an importmap so that BOTH this page and
+  ../Leak.js resolve @zakkster/lite-signal to the same module instance (owner
+  identity must be shared or leak attribution breaks). The package itself is
+  loaded from source at ../Leak.js. Serve from the package root:  npx serve .
+  then open /demo/ .
+-->
+<script type="importmap">
+{
+  "imports": {
+    "@zakkster/lite-signal": "https://esm.sh/@zakkster/lite-signal@1.9.0-preview.0",
+    "@zakkster/lite-cleanup": "https://esm.sh/@zakkster/lite-cleanup@1",
+    "@zakkster/lite-leak": "../Leak.js"
+  }
+}
+</script>
+
+<style>
+  :root {
+    color-scheme: dark;
+
+    --bg: #060a07;
+    --bg: oklch(0.16 0.02 155);
+    --panel: #0b120d;
+    --panel: oklch(0.2 0.025 155);
+    --edge: #16241b;
+    --edge: oklch(0.28 0.03 155);
+
+    --phosphor: #7cffb2;
+    --phosphor: oklch(0.87 0.17 155);
+    --phosphor-dim: #3f7a58;
+    --phosphor-dim: oklch(0.55 0.09 155);
+    --amber: #ffb454;
+    --amber: oklch(0.82 0.15 75);
+    --red: #ff5c6c;
+    --red: oklch(0.7 0.18 20);
+    --ink: #cdEEDD;
+    --ink: oklch(0.92 0.03 155);
+    --muted: #6f8a7b;
+    --muted: oklch(0.65 0.03 155);
+
+    --grid-line: color-mix(in oklch, var(--phosphor) 8%, transparent);
+    --scan: color-mix(in oklch, #000 22%, transparent);
+
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace;
+    --r: 0.5rem;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body { margin: 0; }
+
+  body {
+    min-height: 100dvh;
+    font-family: var(--mono);
+    color: var(--ink);
+    background-color: var(--bg);
+    background-image:
+      repeating-linear-gradient(0deg, transparent 0 1.75rem, var(--grid-line) 1.75rem calc(1.75rem + 1px)),
+      repeating-linear-gradient(90deg, transparent 0 1.75rem, var(--grid-line) 1.75rem calc(1.75rem + 1px));
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* faint CRT scanlines over everything */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 9;
+    background-image: repeating-linear-gradient(0deg, var(--scan) 0 1px, transparent 1px 3px);
+    opacity: 0.5;
+    mix-blend-mode: multiply;
+  }
+
+  .wrap { max-width: 62rem; margin-inline: auto; padding: 1.5rem 1.25rem 4rem; }
+
+  header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem 1rem; }
+
+  h1 {
+    font-size: 1.05rem;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    margin: 0;
+    color: var(--phosphor);
+    text-shadow: 0 0 0.6rem color-mix(in oklch, var(--phosphor) 45%, transparent);
+  }
+  .sub { color: var(--muted); font-size: 0.8rem; letter-spacing: 0.04em; }
+  .ver { margin-inline-start: auto; color: var(--phosphor-dim); font-size: 0.78rem; }
+
+  #tabs { display: flex; gap: 0.4rem; margin: 1.25rem 0 1rem; flex-wrap: wrap; }
+
+  .tab {
+    appearance: none;
+    font: inherit;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    font-size: 0.72rem;
+    color: var(--muted);
+    background: var(--panel);
+    border: 1px solid var(--edge);
+    border-radius: var(--r);
+    padding: 0.5rem 0.85rem;
+    cursor: pointer;
+    transition: color 0.15s, border-color 0.15s, box-shadow 0.15s;
+  }
+  .tab[aria-selected="true"] {
+    color: var(--phosphor);
+    border-color: color-mix(in oklch, var(--phosphor) 45%, var(--edge));
+    box-shadow: inset 0 0 0.6rem color-mix(in oklch, var(--phosphor) 18%, transparent);
+  }
+  @media (hover: hover) {
+    .tab:hover { color: var(--ink); }
+  }
+  :is(.tab, .btn):focus-visible {
+    outline: 2px solid var(--phosphor);
+    outline-offset: 2px;
+  }
+
+  section[data-scene] { display: none; }
+  section[data-scene].on { display: block; }
+
+  .grid { display: grid; gap: 1rem; grid-template-columns: 1fr; }
+  @media (min-width: 52rem) {
+    .grid { grid-template-columns: 1.35fr 1fr; align-items: start; }
+  }
+
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--edge);
+    border-radius: var(--r);
+    padding: 1rem;
+  }
+  .card h2 {
+    font-size: 0.72rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0 0 0.75rem;
+  }
+
+  /* --- scope --- */
+  .scope {
+    position: relative;
+    border: 1px solid color-mix(in oklch, var(--phosphor) 22%, var(--edge));
+    border-radius: var(--r);
+    background:
+      radial-gradient(120% 90% at 50% 0%, color-mix(in oklch, var(--phosphor) 6%, transparent), transparent 60%),
+      var(--bg);
+    overflow: hidden;
+    aspect-ratio: 16 / 7;
+  }
+  .scope canvas { display: block; width: 100%; height: 100%; }
+  .scope .badge {
+    position: absolute;
+    inset-block-start: 0.5rem;
+    inset-inline-end: 0.6rem;
+    font-size: 0.68rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    padding: 0.15rem 0.5rem;
+    border-radius: 999px;
+    border: 1px solid var(--edge);
+    color: var(--muted);
+    background: color-mix(in oklch, var(--bg) 70%, transparent);
+  }
+  .scope[data-state="owned"] .badge { color: var(--phosphor); border-color: color-mix(in oklch, var(--phosphor) 50%, transparent); }
+  .scope[data-state="orphan"] .badge { color: var(--amber); border-color: color-mix(in oklch, var(--amber) 50%, transparent); }
+  .scope[data-state="idle"] .badge { color: var(--muted); }
+
+  /* --- owner diagram --- */
+  .diagram { width: 100%; height: auto; margin-block: 0.25rem 0.5rem; }
+  .state-node circle {
+    fill: color-mix(in oklch, var(--panel) 60%, var(--bg));
+    stroke: var(--phosphor-dim);
+    stroke-width: 1.5;
+    transition: stroke 0.2s, fill 0.2s;
+  }
+  .state-node text { fill: var(--muted); font-size: 8px; font-family: var(--mono); letter-spacing: 0.06em; }
+  .state-node.active circle { stroke: var(--phosphor); fill: color-mix(in oklch, var(--phosphor) 14%, var(--bg)); filter: drop-shadow(0 0 4px color-mix(in oklch, var(--phosphor) 55%, transparent)); }
+  .state-node.active text { fill: var(--phosphor); }
+  .state-node.warn circle { stroke: var(--amber); fill: color-mix(in oklch, var(--amber) 14%, var(--bg)); filter: drop-shadow(0 0 4px color-mix(in oklch, var(--amber) 55%, transparent)); }
+  .state-node.warn text { fill: var(--amber); }
+  .edge { stroke: var(--phosphor-dim); stroke-width: 1.4; fill: none; marker-end: url(#arrow); transition: stroke 0.2s; }
+  .edge.live { stroke: var(--phosphor); }
+  .edge.warn { stroke: var(--amber); }
+  #arrow path { fill: var(--phosphor-dim); }
+
+  /* --- controls --- */
+  .controls { display: flex; flex-wrap: wrap; gap: 0.45rem; }
+  .btn {
+    appearance: none;
+    font: inherit;
+    font-size: 0.74rem;
+    letter-spacing: 0.04em;
+    color: var(--ink);
+    background: color-mix(in oklch, var(--phosphor) 6%, var(--panel));
+    border: 1px solid var(--edge);
+    border-radius: var(--r);
+    padding: 0.5rem 0.7rem;
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s, transform 0.05s;
+  }
+  .btn[data-kind="go"] { border-color: color-mix(in oklch, var(--phosphor) 45%, var(--edge)); color: var(--phosphor); }
+  .btn[data-kind="stop"] { border-color: color-mix(in oklch, var(--amber) 40%, var(--edge)); color: var(--amber); }
+  .btn[data-kind="danger"] { border-color: color-mix(in oklch, var(--red) 40%, var(--edge)); color: var(--red); }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  @media (hover: hover) {
+    .btn:not(:disabled):hover { background: color-mix(in oklch, var(--phosphor) 12%, var(--panel)); }
+  }
+  .btn:not(:disabled):active { transform: translateY(1px); }
+
+  /* --- telemetry --- */
+  .readout { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.5rem 1rem; margin-block: 0.85rem 0; }
+  .metric { display: flex; align-items: baseline; justify-content: space-between; gap: 0.5rem; border-bottom: 1px dotted var(--edge); padding-block: 0.2rem; }
+  .metric .k { color: var(--muted); font-size: 0.7rem; letter-spacing: 0.08em; text-transform: uppercase; }
+  .metric .v { color: var(--phosphor); font-variant-numeric: tabular-nums; font-size: 0.92rem; }
+  .metric[data-hot="warn"] .v { color: var(--amber); }
+  .metric[data-hot="leak"] .v { color: var(--red); }
+
+  /* --- log --- */
+  .log { margin-top: 1rem; }
+  .log h2 { display: flex; justify-content: space-between; }
+  .log .clear { color: var(--muted); font-size: 0.66rem; cursor: pointer; background: none; border: 0; font-family: inherit; letter-spacing: 0.1em; }
+  ol.rows { list-style: none; margin: 0; padding: 0; max-height: 15rem; overflow-y: auto; }
+  ol.rows li {
+    display: grid;
+    grid-template-columns: 3.2rem 4.2rem 1fr;
+    gap: 0.5rem;
+    font-size: 0.72rem;
+    padding: 0.22rem 0;
+    border-bottom: 1px solid color-mix(in oklch, var(--edge) 60%, transparent);
+  }
+  ol.rows li .t { color: var(--muted); font-variant-numeric: tabular-nums; }
+  ol.rows li .c { letter-spacing: 0.08em; text-transform: uppercase; font-size: 0.66rem; }
+  li[data-c="info"] .c { color: var(--phosphor-dim); }
+  li[data-c="warn"] .c { color: var(--amber); }
+  li[data-c="find"] .c { color: var(--phosphor); }
+  li[data-c="leak"] .c { color: var(--red); }
+  ol.rows li .m { color: var(--ink); overflow-wrap: anywhere; }
+  ol.rows:empty::after { content: "— no events —"; color: var(--muted); font-size: 0.72rem; }
+
+  .note { color: var(--muted); font-size: 0.74rem; margin-top: 0.75rem; }
+  code { color: var(--phosphor); background: color-mix(in oklch, var(--phosphor) 8%, transparent); padding: 0.05rem 0.3rem; border-radius: 0.25rem; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .state-node.active circle, .state-node.warn circle { filter: none; }
+    h1 { text-shadow: none; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>lite-leak</h1>
+    <span class="sub">raf-orphan scope</span>
+    <span class="ver" id="ver">v—</span>
+  </header>
+
+  <nav id="tabs" role="tablist" aria-label="Scenes">
+    <button class="tab" role="tab" data-scene="raf" aria-selected="true">rAF loop</button>
+    <button class="tab" role="tab" data-scene="timer" aria-selected="false">timer coexist</button>
+  </nav>
+
+  <!-- ============ SCENE: raf-orphan ============ -->
+  <section data-scene="raf" class="on">
+    <div class="grid">
+      <div>
+        <div class="scope" id="scope" data-state="idle">
+          <span class="badge" id="scope-badge">idle</span>
+          <canvas id="trace" width="800" height="350"></canvas>
+        </div>
+
+        <svg class="diagram" id="diagram" viewBox="0 0 320 80" role="img" aria-label="owner scope diagram">
+          <defs>
+            <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" />
+            </marker>
+          </defs>
+          <g class="state-node" id="n-owner"><circle cx="70" cy="40" r="26" /><text x="70" y="43" text-anchor="middle">effect()</text></g>
+          <path class="edge" id="e-schedule" d="M100,40 L216,40" />
+          <g class="state-node" id="n-loop"><circle cx="250" cy="40" r="26" /><text x="250" y="43" text-anchor="middle">rAF loop</text></g>
+        </svg>
+
+        <div class="readout">
+          <div class="metric"><span class="k">frames</span><span class="v" id="m-frames">0</span></div>
+          <div class="metric"><span class="k">leaks</span><span class="v" id="m-armed">0</span></div>
+          <div class="metric" data-hot="warn"><span class="k">warnings</span><span class="v" id="m-warn">0</span></div>
+          <div class="metric"><span class="k">findings</span><span class="v" id="m-find">0</span></div>
+        </div>
+        <p class="note">The trace is a <em>real</em> rAF loop tracked by <code>raf-orphan</code>.
+          Start it inside an owner, then dispose: the loop's <strong>currently armed</strong>
+          frame is cancelled and the trace freezes. Start it orphaned and it runs on with a
+          single <code>no-owner-set</code> warning — never one per frame.</p>
+      </div>
+
+      <div>
+        <div class="card">
+          <h2>dispatch</h2>
+          <div class="controls">
+            <button class="btn" data-kind="go" id="b-owned">Start in effect()</button>
+            <button class="btn" data-kind="stop" id="b-dispose" disabled>Dispose owner</button>
+            <button class="btn" data-kind="danger" id="b-orphan">Start orphaned</button>
+            <button class="btn" data-kind="danger" id="b-selfdispose">Dispose mid-frame</button>
+            <button class="btn" id="b-audit">Run audit()</button>
+            <button class="btn" data-kind="stop" id="b-stop">Stop all</button>
+          </div>
+        </div>
+
+        <div class="card log">
+          <h2>channel log <button class="clear" id="b-clear" type="button">clear</button></h2>
+          <ol class="rows" id="log" aria-live="polite"></ol>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ SCENE: timer coexist ============ -->
+  <section data-scene="timer">
+    <div class="grid">
+      <div>
+        <div class="card">
+          <h2>timer-orphan × raf-orphan</h2>
+          <p class="note" style="margin-top: 0">
+            With <code>handleRaf: false</code>, <code>timer-orphan</code> cedes the rAF
+            surface so both kernels install on one tracker. Here <code>timer-orphan</code>
+            watches an <code>setInterval</code> tick started inside an effect (auto-cleared on
+            dispose) and a module-scope <code>setTimeout</code> (warns). The rAF surface stays
+            with <code>raf-orphan</code>.</p>
+        </div>
+        <div class="readout">
+          <div class="metric"><span class="k">interval ticks</span><span class="v" id="t-ticks">0</span></div>
+          <div class="metric"><span class="k">leaks</span><span class="v" id="t-armed">0</span></div>
+          <div class="metric" data-hot="warn"><span class="k">warnings</span><span class="v" id="t-warn">0</span></div>
+          <div class="metric"><span class="k">findings</span><span class="v" id="t-find">0</span></div>
+        </div>
+      </div>
+      <div>
+        <div class="card">
+          <h2>dispatch</h2>
+          <div class="controls">
+            <button class="btn" data-kind="go" id="tb-interval">Interval in effect()</button>
+            <button class="btn" data-kind="stop" id="tb-dispose" disabled>Dispose owner</button>
+            <button class="btn" data-kind="danger" id="tb-orphan">setTimeout, no owner</button>
+            <button class="btn" id="tb-audit">Run audit()</button>
+          </div>
+        </div>
+        <div class="card log">
+          <h2>channel log <button class="clear" id="tb-clear" type="button">clear</button></h2>
+          <ol class="rows" id="tlog" aria-live="polite"></ol>
+        </div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<script type="module">
+import { effect, dispose } from '@zakkster/lite-signal';
+import {
+  VERSION,
+  createLeakTracker,
+  createRafOrphanKernel,
+  createTimerOrphanKernel,
+  createProfilerSignalSink,
+} from '@zakkster/lite-leak';
+
+// ---- constants ----
+const TAU = Math.PI * 2;
+const RING = 2048;            // power of two, >= any canvas pixel width here
+const MASK = RING - 1;
+const TELE_MASK = 7;          // throttle textContent to ~1 in 8 frames (~7.5Hz)
+
+// ---- cached DOM (all lookups once, at init) ----
+const $ver = document.getElementById('ver');
+const $tabs = document.getElementById('tabs');
+const $scenes = document.querySelectorAll('section[data-scene]');
+const $tabBtns = document.querySelectorAll('.tab');
+
+const $scope = document.getElementById('scope');
+const $badge = document.getElementById('scope-badge');
+const $canvas = document.getElementById('trace');
+const $mFrames = document.getElementById('m-frames');
+const $mLeaks = document.getElementById('m-armed');   // repurposed: leaks
+const $mWarn = document.getElementById('m-warn');
+const $mFind = document.getElementById('m-find');
+const $nOwner = document.getElementById('n-owner');
+const $nLoop = document.getElementById('n-loop');
+const $eSchedule = document.getElementById('e-schedule');
+const $log = document.getElementById('log');
+
+const $bOwned = document.getElementById('b-owned');
+const $bDispose = document.getElementById('b-dispose');
+const $bOrphan = document.getElementById('b-orphan');
+const $bSelf = document.getElementById('b-selfdispose');
+const $bAudit = document.getElementById('b-audit');
+const $bStop = document.getElementById('b-stop');
+const $bClear = document.getElementById('b-clear');
+
+const $tTicks = document.getElementById('t-ticks');
+const $tLeaks = document.getElementById('t-armed');   // repurposed: leaks
+const $tWarn = document.getElementById('t-warn');
+const $tFind = document.getElementById('t-find');
+const $tlog = document.getElementById('tlog');
+const $tbInterval = document.getElementById('tb-interval');
+const $tbDispose = document.getElementById('tb-dispose');
+const $tbOrphan = document.getElementById('tb-orphan');
+const $tbAudit = document.getElementById('tb-audit');
+const $tbClear = document.getElementById('tb-clear');
+
+$ver.textContent = 'v' + VERSION;
+
+// ---- canvas setup (cache ctx + trace colors once; no per-frame lookups) ----
+const ctx = $canvas.getContext('2d');
+const css = getComputedStyle(document.documentElement);
+const TRACE = (css.getPropertyValue('--phosphor') || '#7cffb2').trim();
+const TRACE_DIM = (css.getPropertyValue('--phosphor-dim') || '#3f7a58').trim();
+const AMBER = (css.getPropertyValue('--amber') || '#ffb454').trim();
+let W = $canvas.width;
+let H = $canvas.height;
+
+function sizeCanvas() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const rect = $canvas.getBoundingClientRect();
+  W = Math.min(RING, Math.max(2, (rect.width * dpr) | 0));
+  H = Math.max(2, (rect.height * dpr) | 0);
+  $canvas.width = W;
+  $canvas.height = H;
+}
+sizeCanvas();
+window.addEventListener('resize', sizeCanvas, { passive: true });
+
+// ---- pre-allocated ring buffer (zero alloc on the frame loop) ----
+const ring = new Float64Array(RING);
+let writeIdx = 0;
+let phase = 0;
+
+// ---- ONE shared tracker + a real ecosystem sink ----
+const sink = createProfilerSignalSink();
+
+function logFor(kind) {
+  // timer-orphan events go to the timer scene log; everything else to rAF.
+  return kind === 'timer-orphan' ? $tlog : $log;
+}
+
+const tracker = createLeakTracker({
+  onWarning(w) { sink.onWarning(w); pushLog(logFor(w.kind), 'warn', w.reason); },
+  onFinding(f) { sink.onFinding(f); pushLog(logFor(f.kind), 'find', f.reason); },
+  onLeak(r) { sink.onLeak(r); pushLog(logFor(r.kind), 'leak', r.kind); },
+});
+// timer-orphan cedes rAF (handleRaf:false) so raf-orphan owns it. Both live on
+// the one tracker and patch the real window globals.
+const timerKernel = createTimerOrphanKernel({ handleRaf: false, warnOnNoOwner: true });
+tracker.registerKernel(timerKernel);
+const rafKernel = createRafOrphanKernel({ warnOnNoOwner: true });
+tracker.registerKernel(rafKernel);
+
+// One effect per scene binds the sink's reactive counts to the DOM (blueprint).
+effect(() => {
+  $mWarn.textContent = sink.warningCount();
+  $mFind.textContent = sink.findingCount();
+  $mLeaks.textContent = sink.leakCount();
+});
+effect(() => {
+  $tWarn.textContent = sink.warningCount();
+  $tFind.textContent = sink.findingCount();
+  $tLeaks.textContent = sink.leakCount();
+});
+
+// ---- raf scene state ----
+let scopeOwner = null;   // the effect() handle owning the loop
+let liveId = 0;          // last armed rAF id (for manual Stop all)
+let orphaned = false;    // loop started (or fell) without an owner
+let selfDisposeAt = 0;   // frame at which the loop disposes its own owner
+let frame = 0;
+
+function setScope(state, badge) {
+  $scope.dataset.state = state;
+  $badge.textContent = badge;
+}
+function markDiagram(state) {
+  $nOwner.classList.toggle('active', state === 'owned');
+  $nLoop.classList.toggle('active', state === 'owned');
+  $nLoop.classList.toggle('warn', state === 'orphan');
+  $eSchedule.classList.toggle('live', state === 'owned');
+  $eSchedule.classList.toggle('warn', state === 'orphan');
+}
+function setRunButtons(running) {
+  $bOwned.disabled = running;
+  $bOrphan.disabled = running;
+  $bSelf.disabled = running;
+  $bDispose.disabled = !(running && scopeOwner !== null);
+}
+
+function drawFrame() {
+  frame = (frame + 1) | 0;
+  phase += 0.09;
+  // one sample per frame into the ring (zero alloc)
+  ring[writeIdx & MASK] = Math.sin(phase) * (0.6 + 0.4 * Math.sin(phase * 0.37));
+  writeIdx = (writeIdx + 1) | 0;
+
+  renderTrace(orphaned ? AMBER : TRACE);
+
+  // showcase: dispose our own owner mid-frame, then reschedule anyway
+  if (selfDisposeAt !== 0 && frame >= selfDisposeAt && scopeOwner !== null) {
+    selfDisposeAt = 0;
+    dispose(scopeOwner);   // owner dies here...
+    scopeOwner = null;
+    orphaned = true;
+    setScope('orphan', 'reschedule-after-dispose');
+    markDiagram('orphan');
+    setRunButtons(true);
+  }
+
+  // throttled telemetry: only frames here; the counts are reactive via the sink
+  if ((frame & TELE_MASK) === 0) $mFrames.textContent = frame;
+
+  liveId = requestAnimationFrame(drawFrame); // ...the loop reschedules anyway
+}
+
+function renderTrace(stroke) {
+  const half = H * 0.5;
+  const amp = H * 0.4;
+  ctx.clearRect(0, 0, W, H);
+  // baseline
+  ctx.globalAlpha = 0.35;
+  ctx.strokeStyle = TRACE_DIM;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(0, half);
+  ctx.lineTo(W, half);
+  ctx.stroke();
+  // trace
+  ctx.globalAlpha = 1;
+  ctx.strokeStyle = stroke;
+  ctx.lineWidth = Math.max(1.5, H / 180);
+  ctx.beginPath();
+  for (let x = 0; x < W; x++) {
+    const i = (writeIdx + x) & MASK;
+    const y = half - ring[i] * amp;
+    if (x === 0) ctx.moveTo(0, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+}
+
+function startOwned() {
+  frame = 0; orphaned = false; selfDisposeAt = 0;
+  // Scheduling inside effect() means raf-orphan captures THIS owner and wires
+  // cleanup to cancel whatever frame is armed at disposal.
+  scopeOwner = effect(() => { liveId = requestAnimationFrame(drawFrame); });
+  setScope('owned', 'owned \u00b7 running');
+  markDiagram('owned');
+  setRunButtons(true);
+  pushLog($log, 'info', 'loop started inside effect()');
+}
+
+function startOrphan() {
+  frame = 0; orphaned = true; selfDisposeAt = 0; scopeOwner = null;
+  liveId = requestAnimationFrame(drawFrame); // module scope: no owner
+  setScope('orphan', 'orphaned \u00b7 leaking');
+  markDiagram('orphan');
+  setRunButtons(true);
+  $bDispose.disabled = true;
+  pushLog($log, 'info', 'loop started with no owner');
+}
+
+function startSelfDispose() {
+  startOwned();
+  selfDisposeAt = frame + 90; // ~1.5s in, dispose own owner then loop on
+  pushLog($log, 'info', 'will dispose own owner mid-frame');
+}
+
+function disposeOwner() {
+  if (scopeOwner !== null) {
+    dispose(scopeOwner);   // raf-orphan cancels the armed frame -> loop stops
+    scopeOwner = null;
+  }
+  orphaned = false;
+  setScope('idle', 'disposed \u00b7 trace frozen');
+  markDiagram('idle');
+  setRunButtons(false);
+  pushLog($log, 'info', 'owner disposed \u2014 armed frame cancelled');
+}
+
+function stopAll() {
+  if (scopeOwner !== null) { dispose(scopeOwner); scopeOwner = null; }
+  if (liveId !== 0) { cancelAnimationFrame(liveId); liveId = 0; }
+  orphaned = false; selfDisposeAt = 0;
+  setScope('idle', 'idle');
+  markDiagram('idle');
+  setRunButtons(false);
+}
+
+function runAudit() {
+  const findings = tracker.audit();
+  if (findings.length === 0) { pushLog($log, 'info', 'audit clean'); return; }
+  for (let i = 0; i < findings.length; i++) {
+    const advice = tracker.remediate(findings[i]);
+    pushLog($log, 'find', findings[i].reason + '  \u2192  ' + advice.slice(0, 72) + '\u2026');
+  }
+}
+
+// buttons use click for accessible activation
+$bOwned.addEventListener('click', startOwned);
+$bOrphan.addEventListener('click', startOrphan);
+$bSelf.addEventListener('click', startSelfDispose);
+$bDispose.addEventListener('click', disposeOwner);
+$bStop.addEventListener('click', stopAll);
+$bAudit.addEventListener('click', runAudit);
+$bClear.addEventListener('click', () => { $log.replaceChildren(); });
+
+// ---- timer scene (same shared tracker; timer-orphan patched window at init) ----
+let tOwner = null;
+let ticks = 0;
+
+function startInterval() {
+  ticks = 0;
+  // setInterval here is the patched global -> tracked, owner = this effect.
+  tOwner = effect(() => {
+    setInterval(() => {
+      ticks = (ticks + 1) | 0;
+      if ((ticks & 1) === 0) $tTicks.textContent = ticks;
+    }, 250);
+  });
+  $tbInterval.disabled = true;
+  $tbDispose.disabled = false;
+  pushLog($tlog, 'info', 'setInterval started inside effect()');
+}
+
+function disposeTimer() {
+  if (tOwner !== null) { dispose(tOwner); tOwner = null; } // kernel clears it
+  $tbInterval.disabled = false;
+  $tbDispose.disabled = true;
+  pushLog($tlog, 'info', 'owner disposed \u2014 interval auto-cleared');
+}
+
+function orphanTimeout() {
+  setTimeout(() => {}, 60000); // module scope: warns no-owner-set via tracker
+}
+
+function auditTimers() {
+  const f = tracker.audit();
+  if (f.length === 0) { pushLog($tlog, 'info', 'audit clean'); return; }
+  for (let i = 0; i < f.length; i++) pushLog($tlog, 'find', f[i].reason);
+}
+
+$tbInterval.addEventListener('click', startInterval);
+$tbDispose.addEventListener('click', disposeTimer);
+$tbOrphan.addEventListener('click', orphanTimeout);
+$tbAudit.addEventListener('click', auditTimers);
+$tbClear.addEventListener('click', () => { $tlog.replaceChildren(); });
+
+// ---- log helper (bounded; drops oldest) ----
+const LOG_CAP = 40;
+function pushLog(list, chan, msg) {
+  const li = document.createElement('li');
+  li.dataset.c = chan;
+  const t = document.createElement('span'); t.className = 't'; t.textContent = clock();
+  const c = document.createElement('span'); c.className = 'c'; c.textContent = chan;
+  const m = document.createElement('span'); m.className = 'm'; m.textContent = msg;
+  li.append(t, c, m);
+  list.prepend(li);
+  while (list.childElementCount > LOG_CAP) list.lastElementChild.remove();
+}
+function clock() {
+  const d = new Date();
+  return String(d.getMinutes()).padStart(2, '0') + ':' +
+         String(d.getSeconds()).padStart(2, '0');
+}
+
+// ---- tabs ----
+$tabs.addEventListener('click', (ev) => {
+  const btn = ev.target.closest('.tab');
+  if (btn === null) return;
+  const scene = btn.dataset.scene;
+  for (const b of $tabBtns) b.setAttribute('aria-selected', String(b === btn));
+  for (const s of $scenes) s.classList.toggle('on', s.dataset.scene === scene);
+  if (scene === 'raf') sizeCanvas();
+});
+
+// ---- boot (initial UI state is derived, not hardcoded) ----
+setScope('idle', 'idle');
+setRunButtons(false);
+renderTrace(TRACE_DIM);
+pushLog($log, 'info', 'raf-orphan ready \u2014 start a loop');
+</script>
+</body>
+</html>

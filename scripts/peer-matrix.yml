@@ -1,0 +1,54 @@
+name: peer-matrix
+
+# Validates lite-leak's owner-frame assumptions against every lite-signal
+# peer listed in peers.json (the 1.8.0 clean base and the latest rebuilt
+# 1.9-1.12 prerelease). Runs on every push/PR and can be triggered from
+# lite-signal's release pipeline via repository_dispatch so a lite-signal
+# owner-tree change that would break leak attribution fails HERE first.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+  repository_dispatch:
+    types: [lite-signal-release]
+
+jobs:
+  # Read peers.json once and emit a JSON matrix the next job fans out over.
+  discover:
+    runs-on: ubuntu-latest
+    outputs:
+      include: ${{ steps.read.outputs.include }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: read
+        run: |
+          include=$(node -e "const p=require('./peers.json');console.log(JSON.stringify(p.versions.map(v=>({role:v.role,spec:v.spec}))))")
+          echo "include=$include" >> "$GITHUB_OUTPUT"
+
+  peers:
+    needs: discover
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [20, 22]
+        include: ${{ fromJSON(needs.discover.outputs.include) }}
+    name: "signal@${{ matrix.spec }} (${{ matrix.role }}) node${{ matrix.node }}"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Install
+        run: npm install --no-audit --no-fund
+      - name: Pin peer @zakkster/lite-signal@${{ matrix.spec }}
+        run: npm install "@zakkster/lite-signal@${{ matrix.spec }}" --no-save --no-audit --no-fund
+      - name: Report resolved peer
+        run: node -e "console.log('resolved lite-signal', require('@zakkster/lite-signal/package.json').version)"
+      - name: Peer-assumptions suite
+        run: npm run test:peers
+      - name: Kernel suites (owner-dependent)
+        run: node --test test/kernel-timer-orphan.test.js test/kernel-raf-orphan.test.js test/kernel-owner-cascade.test.js test/owner-integration.test.js

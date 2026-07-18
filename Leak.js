@@ -12,7 +12,7 @@
 import { createDisposalRegistry } from '@zakkster/lite-cleanup';
 import { getOwner, ownerOf, onCleanup, nodeId, describe } from '@zakkster/lite-signal';
 
-export const VERSION = '1.0.0';
+export const VERSION = '1.1.0';
 
 const EMPTY_OPTIONS = Object.freeze(Object.create(null));
 
@@ -76,6 +76,67 @@ export class KernelConflictError extends Error {
  *      perf benchmarks accordingly.
  * @private
  */
+/**
+ * Global patch claims: target object -> set of surface names patched on it.
+ *
+ * `registerKernel`'s patchSurfaces guard is scoped to ONE tracker, so two
+ * trackers -- an app's and a test harness's, or two bundled copies -- each
+ * installed a timer/listener kernel over the SAME global and neither
+ * complained. Whichever uninstalled first then restored the pre-first-patch
+ * original, silently disabling the other: a leak detector that stops detecting
+ * without saying so. Patching is a property of the TARGET, not of the tracker,
+ * so the claim lives here at module scope.
+ *
+ * @private
+ */
+const patchClaims = new WeakMap();
+
+/**
+ * Claim `surface` on `target`.
+ *
+ * Returns false when another kernel instance already holds it. Deliberately
+ * does NOT throw: installing a kernel and never uninstalling it is a normal,
+ * documented pattern (the suite does it), so a hard error would reject working
+ * code. The failure worth eliminating is the SILENT one -- a second patch that
+ * the first one's uninstall then destroys without a word -- and that is handled
+ * by _restoreIfOurs. Callers surface the double-patch as a warning so a
+ * duplicated install is visible rather than fatal.
+ *
+ * @returns {boolean} true if newly claimed, false if already held.
+ * @private
+ */
+export function _claimPatchSurface(target, surface) {
+  if (target === null || (typeof target !== 'object' && typeof target !== 'function')) return true;
+  let held = patchClaims.get(target);
+  if (held === undefined) { held = new Set(); patchClaims.set(target, held); }
+  if (held.has(surface)) return false;
+  held.add(surface);
+  return true;
+}
+
+/** Release a previously claimed surface. @private */
+export function _releasePatchSurface(target, surface) {
+  if (target === null || (typeof target !== 'object' && typeof target !== 'function')) return;
+  const held = patchClaims.get(target);
+  if (held !== undefined) held.delete(surface);
+}
+
+/**
+ * Restore `original` onto `target[prop]` ONLY if our wrapper is still the
+ * installed value. A blind `target[prop] = original` destroys any wrapper a
+ * third party (an APM agent, a test framework, another diagnostic) layered on
+ * top of ours after install, silently un-instrumenting them.
+ *
+ * @returns {boolean} true if restored; false if someone else owns the slot now.
+ * @private
+ */
+export function _restoreIfOurs(target, prop, ourWrapper, original) {
+  if (target === null || (typeof target !== 'object' && typeof target !== 'function')) return false;
+  if (target[prop] !== ourWrapper) return false;
+  target[prop] = original;
+  return true;
+}
+
 function snapshotOwnerPath(ownerHandle) {
   const path = [];
   let cursor = ownerHandle;
@@ -185,8 +246,16 @@ export function createLeakTracker(options) {
     // but the pattern is fragile on legacy runtimes and mobile browsers;
     // reaping post-loop is spec-clean everywhere. Allocation only occurs
     // when stale entries are present (rare in well-behaved code).
+    // Snapshot first. A Set iterator VISITS entries added during iteration, so a
+    // kernel whose audit callback tracks a new { audit: true } handle -- a
+    // perfectly reasonable "found something suspicious, watch it" pattern --
+    // fed its own walk and never terminated. Iterating a snapshot bounds the
+    // pass to the records that existed when it started; anything added lands in
+    // the next pass. The array is the cost of not hanging the process.
+    const snapshot = Array.from(auditedRecords);
     let toReap = null;
-    for (const record of auditedRecords) {
+    for (const record of snapshot) {
+      if (!auditedRecords.has(record)) continue;   // untracked mid-pass
       if (record.handle === null || record.handle.disposed === true) {
         if (toReap === null) toReap = [];
         toReap.push(record);
@@ -460,6 +529,7 @@ export { createListenerOrphanKernel } from './kernels/ListenerOrphan.js';
 export { createObserverOrphanKernel } from './kernels/ObserverOrphan.js';
 export { createDetachedDomKernel } from './kernels/DetachedDom.js';
 export { createAsyncRetentionKernel } from './kernels/AsyncRetention.js';
+export { createRafOrphanKernel } from './kernels/RafOrphan.js';
 
 // -----------------------------------------------------------------
 // Ecosystem sink re-exports (M2.5)

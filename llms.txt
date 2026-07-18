@@ -1,4 +1,4 @@
-@zakkster/lite-leak v0.3.0
+@zakkster/lite-leak v1.1.0
 
 Zero-GC leak diagnostic for the @zakkster/lite-* ecosystem.
 Wraps lite-cleanup's FR primitive with owner-tree attribution and
@@ -97,7 +97,7 @@ createOwnerCascadeOrphanKernel()
       reason: 'stale'|'diverged'|'kind-diverged'|'truncated',
       liveFrame?, handle }
 
-createTimerOrphanKernel({ target?, warnOnNoOwner?, captureStacks?, priority? })
+createTimerOrphanKernel({ target?, warnOnNoOwner?, captureStacks?, handleRaf?, priority? })
   Patches setTimeout/clearTimeout, setInterval/clearInterval,
   requestAnimationFrame/cancelAnimationFrame on target (default globalThis).
   Wires onCleanup for owner-owned timers. Emits onWarning at set-time for
@@ -167,6 +167,44 @@ createAsyncRetentionKernel({ target?, warnOnNoOwner?, captureStacks?, priority? 
   pending controllers. Interoperates with lite-await's structural cleanup
   contract. Provides advise(finding) for tracker.remediate().
   Patch surface: ['AbortController']
+
+createRafOrphanKernel({ target?, warnOnNoOwner?, warnOnRescheduleAfterDispose?, captureStacks?, priority? })
+  Loop-aware requestAnimationFrame leak detection (1.1.0). Unlike
+  timer-orphan (one-shot per frame), models a self-rescheduling loop as a
+  chain: owner captured at first schedule is inherited by every
+  continuation scheduled inside the chain's own callback (active-chain
+  window, since getOwner() is undefined mid-callback). On owner dispose,
+  cancels the frame armed NOW (stops the loop; timer-orphan cannot). One
+  no-owner-set warning per loop, not per frame. reschedule-after-dispose
+  warning for broken cascades / self-disposing loops. audit() reasons:
+  no-owner-loop-armed, owner-disposed-loop-armed. refine() + advise().
+  Patch surfaces: ['requestAnimationFrame', 'cancelAnimationFrame'].
+  Conflicts with timer-orphan on rAF by design -- run timer-orphan with
+  { handleRaf: false } to install both.
+
+PATCH-LIFECYCLE FINDINGS (all patching kernels)
+----------------------------------------------
+Patch claims are TARGET-scoped (module-level WeakMap keyed by the patch
+target), not tracker-scoped: registerKernel's patchSurfaces guard only
+covers one tracker, so two trackers could both wrap the same global and
+neither would complain. Two reasons are emitted via onFinding by
+timer-orphan, listener-orphan and async-retention:
+
+  { kind, reason: 'patch-double-install', surfaces: string[], detail }
+    Another lite-leak kernel instance already patched these surfaces on
+    this target. Both are active, so events are double-counted. Emitted
+    at install; deliberately NOT thrown, because installing a kernel and
+    never uninstalling it is a documented, working pattern.
+
+  { kind, reason: 'patch-layered', surfaces: string[], detail }
+    At uninstall, a third party had layered a wrapper over ours. Restore
+    is identity-checked, so their wrapper is LEFT IN PLACE rather than
+    destroyed. Those orphaned wrappers keep delegating through the
+    captured originals.
+
+audit()/forEachAuditedHandle iterate a SNAPSHOT: a kernel may track a new
+{ audit: true } handle from inside the walk without hanging it. Handles
+added mid-pass are visited on the next pass.
 
 M2 AUDIT API
 ------------

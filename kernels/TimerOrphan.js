@@ -21,6 +21,7 @@
  */
 
 import { getOwner, onCleanup, nodeId } from '@zakkster/lite-signal';
+import { _claimPatchSurface, _releasePatchSurface, _restoreIfOurs } from '../Leak.js';
 
 const KIND = 'timer-orphan';
 const T_TIMEOUT = 'setTimeout';
@@ -40,6 +41,11 @@ const EMPTY_OPTIONS = Object.freeze(Object.create(null));
  *   Emit `onWarning` when a timer is set outside any lite-signal owner.
  * @param {boolean} [options.captureStacks=false]
  *   Capture `Error().stack` at set-time and attach as `origin`.
+ * @param {boolean} [options.handleRaf=true]
+ *   When false, do NOT claim or patch requestAnimationFrame /
+ *   cancelAnimationFrame, leaving that surface for the loop-aware
+ *   `raf-orphan` kernel. Set this false whenever you install
+ *   `createRafOrphanKernel()` alongside this kernel.
  * @param {number} [options.priority=0]
  *   Kernel priority for refine-chain / audit ordering.
  */
@@ -49,12 +55,25 @@ export function createTimerOrphanKernel(options) {
   const warnOnNoOwner = opts.warnOnNoOwner !== false;
   const captureStacks = opts.captureStacks === true;
   const priority = typeof opts.priority === 'number' ? opts.priority : 0;
+  // When false, this kernel does NOT claim or patch the requestAnimationFrame
+  // surface, leaving it for the loop-aware `raf-orphan` kernel to own. Default
+  // true preserves the historical one-shot rAF behaviour. See RafOrphan.js.
+  const handleRaf = opts.handleRaf !== false;
 
   let ctx = null;
   // id -> { kind, cb, id, ownerHandle, handle, origin }
   const timers = new Map();
   // Snapshot of originals for uninstall. null when not installed.
   let originals = null;
+  // The wrappers WE installed, so uninstall can tell our slot from someone else's.
+  let ours = null;
+  // Surfaces claimed globally (target-scoped), released on uninstall.
+  let claimed = null;
+
+  // Every surface this kernel may patch, in one list: claim, capture and
+  // restore all walk it, so they cannot drift apart.
+  const PATCHABLE = ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval',
+    'requestAnimationFrame', 'cancelAnimationFrame'];
 
   function makeWrapper(state, isInterval) {
     return function timerWrapper() {
@@ -129,11 +148,33 @@ export function createTimerOrphanKernel(options) {
 
   const kernel = {
     name: 'timer-orphan',
-    patchSurfaces: ['setTimeout', 'setInterval', 'requestAnimationFrame'],
+    patchSurfaces: handleRaf
+      ? ['setTimeout', 'setInterval', 'requestAnimationFrame']
+      : ['setTimeout', 'setInterval'],
     priority: priority,
 
     install(kernelCtx) {
+      // Claim before patching: two kernel instances on the same target must not
+      // both wrap it. Rolls back anything already claimed if a later one clashes.
+      claimed = [];
+      let contested = null;
+      const surfaces = handleRaf ? PATCHABLE : PATCHABLE.slice(0, 4);
+      for (const s of surfaces) {
+        if (typeof target[s] !== 'function') continue;
+        if (_claimPatchSurface(target, s)) claimed.push(s);
+        else { if (contested === null) contested = []; contested.push(s); }
+      }
+      ours = Object.create(null);
       ctx = kernelCtx;
+      if (contested !== null) {
+        ctx.emitFinding({
+          kind: KIND,
+          reason: 'patch-double-install',
+          surfaces: contested,
+          detail: 'already patched by another lite-leak kernel instance; both are now ' +
+            'active, so these surfaces will be double-counted',
+        });
+      }
       originals = {
         setTimeout: target.setTimeout,
         clearTimeout: target.clearTimeout,
@@ -179,27 +220,57 @@ export function createTimerOrphanKernel(options) {
       if (typeof originals.clearInterval === 'function') {
         target.clearInterval = makeCancel(T_INTERVAL);
       }
-      if (typeof originals.requestAnimationFrame === 'function') {
+      if (handleRaf && typeof originals.requestAnimationFrame === 'function') {
         target.requestAnimationFrame = function patchedRaf(cb) {
           return scheduleGeneric(T_RAF, cb, function (wrapperOrCb) {
             return originals.requestAnimationFrame.call(target, wrapperOrCb);
           });
         };
       }
-      if (typeof originals.cancelAnimationFrame === 'function') {
+      if (handleRaf && typeof originals.cancelAnimationFrame === 'function') {
         target.cancelAnimationFrame = makeCancel(T_RAF);
+      }
+      // Record exactly what we installed, in one place, so uninstall can tell
+      // our wrapper from one a third party layered on afterwards. Done as a
+      // sweep rather than at each assignment so a future edit to any wrapper
+      // cannot forget to register it.
+      for (const prop of PATCHABLE) {
+        if (typeof originals[prop] === 'function' && target[prop] !== originals[prop]) {
+          ours[prop] = target[prop];
+        }
       }
     },
 
     uninstall() {
       if (originals === null) return;
-      if (typeof originals.setTimeout === 'function') target.setTimeout = originals.setTimeout;
-      if (typeof originals.clearTimeout === 'function') target.clearTimeout = originals.clearTimeout;
-      if (typeof originals.setInterval === 'function') target.setInterval = originals.setInterval;
-      if (typeof originals.clearInterval === 'function') target.clearInterval = originals.clearInterval;
-      if (typeof originals.requestAnimationFrame === 'function') target.requestAnimationFrame = originals.requestAnimationFrame;
-      if (typeof originals.cancelAnimationFrame === 'function') target.cancelAnimationFrame = originals.cancelAnimationFrame;
-      originals = null;
+      // Restore only slots we still own. If a third party wrapped us after
+      // install, a blind assignment would silently un-instrument them.
+      let clobbered = null;
+      for (const prop of PATCHABLE) {
+        if (typeof originals[prop] !== 'function') continue;
+        if (ours[prop] === undefined) continue;
+        if (!_restoreIfOurs(target, prop, ours[prop], originals[prop])) {
+          if (clobbered === null) clobbered = [];
+          clobbered.push(prop);
+        }
+      }
+      if (clobbered !== null && ctx !== null) {
+        ctx.emitFinding({
+          kind: KIND,
+          reason: 'patch-layered',
+          surfaces: clobbered,
+          detail: 'another wrapper was installed over these after this kernel; left in place',
+        });
+      }
+      if (claimed !== null) { for (const s of claimed) _releasePatchSurface(target, s); claimed = null; }
+      ours = null;
+      // Keep `originals` alive when we deliberately left a wrapper installed.
+      // Those orphaned wrappers still run (a third party is calling through
+      // them) and they fall back to originals.* once ctx is null -- nulling it
+      // here turned every subsequent timer call into a TypeError, and every
+      // clear into a silent no-op. Only release when the slots are all ours
+      // again and nothing can reach the wrappers.
+      if (clobbered === null) originals = null;
       timers.clear();
       ctx = null;
     },

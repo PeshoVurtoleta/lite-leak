@@ -1,0 +1,15 @@
+{
+  "//": "Single source of truth for the lite-signal peer matrix. CI expands",
+  "//2": "over every entry in `versions`, installing @zakkster/lite-signal at",
+  "//3": "that exact spec and running test/peer-assumptions.test.js against it.",
+  "//4": "EDIT THIS to your real targets: the 1.8.0 clean base and the latest",
+  "//5": "rebuilt 1.9-1.12 prerelease. The defaults below resolve on the public",
+  "//6": "registry so the matrix is green out of the box; the two roles that",
+  "//7": "matter are `baseline` and `rebuilt-latest`.",
+  "package": "@zakkster/lite-signal",
+  "versions": [
+    { "role": "baseline", "spec": "1.8.0-alpha.2" },
+    { "role": "rebuilt-latest", "spec": "1.9.0-preview.0" },
+    { "role": "rebuilt-canary", "spec": "1.9.0-canary.1" }
+  ]
+}

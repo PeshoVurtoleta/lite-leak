@@ -17,6 +17,7 @@
  */
 
 import { getOwner, onCleanup } from '@zakkster/lite-signal';
+import { _claimPatchSurface, _releasePatchSurface, _restoreIfOurs } from '../Leak.js';
 
 const KIND = 'listener-orphan';
 const EMPTY_OPTIONS = Object.freeze(Object.create(null));
@@ -41,6 +42,8 @@ export function createListenerOrphanKernel(options) {
 
   let ctx = null;
   let originals = null;
+  let ours = null;
+  let claimed = null;
 
   const kernel = {
     name: 'listener-orphan',
@@ -53,6 +56,25 @@ export function createListenerOrphanKernel(options) {
         // No target to patch (unusual environment); install is a no-op.
         originals = null;
         return;
+      }
+      // EventTarget.prototype is a GLOBAL prototype -- the most damaging thing
+      // in this package to double-patch. Claim it per-target so a second kernel
+      // instance (another tracker, a second bundled copy) is rejected loudly
+      // instead of silently layering.
+      claimed = [];
+      let contested = null;
+      for (const prop of ['addEventListener', 'removeEventListener']) {
+        if (_claimPatchSurface(EvTarget.prototype, prop)) claimed.push(prop);
+        else { if (contested === null) contested = []; contested.push(prop); }
+      }
+      if (contested !== null) {
+        ctx.emitFinding({
+          kind: KIND,
+          reason: 'patch-double-install',
+          surfaces: contested,
+          detail: 'EventTarget.prototype is already patched by another lite-leak kernel ' +
+            'instance; listeners will be counted twice',
+        });
       }
       originals = {
         addEventListener: EvTarget.prototype.addEventListener,
@@ -98,6 +120,7 @@ export function createListenerOrphanKernel(options) {
         }
       };
 
+      // (capture of the installed wrappers happens right after both assignments)
       EvTarget.prototype.removeEventListener = function patchedRemove(type, listener, listenerOptions) {
         // We have no reliable way to look up the handle without a strong
         // registry. The auto-untrack via onCleanup already runs on owner
@@ -106,14 +129,38 @@ export function createListenerOrphanKernel(options) {
         // until FR fires -- harmless (no leak, just a stale registration).
         return origRemove.call(this, type, listener, listenerOptions);
       };
+
+      // Record what we installed, NOW. Capturing at uninstall time would read
+      // back whatever is in the slot then -- including a third party's wrapper
+      // layered over ours -- and _restoreIfOurs would happily destroy it.
+      ours = {
+        addEventListener: EvTarget.prototype.addEventListener,
+        removeEventListener: EvTarget.prototype.removeEventListener,
+      };
     },
 
     uninstall() {
       if (originals === null) return;
-      EvTarget.prototype.addEventListener = originals.addEventListener;
-      EvTarget.prototype.removeEventListener = originals.removeEventListener;
-      originals = null;
+      let clobbered = null;
+      for (const prop of ['addEventListener', 'removeEventListener']) {
+        if (!_restoreIfOurs(EvTarget.prototype, prop, ours[prop], originals[prop])) {
+          if (clobbered === null) clobbered = [];
+          clobbered.push(prop);
+        }
+      }
+      if (clobbered !== null && ctx !== null) {
+        ctx.emitFinding({
+          kind: KIND,
+          reason: 'patch-layered',
+          surfaces: clobbered,
+          detail: 'another wrapper was installed over these after this kernel; left in place',
+        });
+      }
+      if (claimed !== null) { for (const c of claimed) _releasePatchSurface(EvTarget.prototype, c); claimed = null; }
+      ours = null;
       ctx = null;
+      // Wrappers left installed still delegate through originals.*.
+      if (clobbered === null) originals = null;
     },
 
     refine(report, leakRecord) {

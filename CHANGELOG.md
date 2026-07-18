@@ -3,6 +3,117 @@
 All notable changes to `@zakkster/lite-leak` will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-07-15
+
+**Peer matrix + raf-orphan kernel.** The urgent half of the level-up: CI
+insurance against lite-signal owner-tree drift, and coverage for the single
+most common leak-prone resource in the ecosystem.
+
+### Added -- `raf-orphan` kernel (7th kernel)
+
+- **`createRafOrphanKernel(options?)`** -- loop-aware requestAnimationFrame
+  leak detection. `timer-orphan` already patches rAF, but it treats every
+  frame as a fire-once timer; a self-rescheduling loop defeats that model
+  (the reschedule runs outside any owner, so cleanup cancels a long-consumed
+  frame id and the loop leaks forever). This kernel models the loop as a
+  **chain**: the owner captured at the first schedule is inherited by every
+  continuation scheduled from inside the chain's own callback.
+  - **Auto-cancel that actually stops the loop.** On owner disposal, cancels
+    the frame that is *currently armed*, not the one armed at schedule-time.
+  - **One warning per loop, not per frame.** A module-scope loop emits a
+    single `no-owner-set` warning; `timer-orphan` emitted one every ~16 ms.
+  - **`reschedule-after-dispose`** warning -- defense-in-depth for a broken
+    owner cascade or a callback that disposes its own owner mid-frame and
+    then reschedules.
+  - **`audit()`** surfaces `no-owner-loop-armed` and
+    `owner-disposed-loop-armed`; **`refine()`** classifies FR-collected loop
+    callbacks; **`advise()`** carries per-reason remediation.
+  - Options: `target`, `warnOnNoOwner`, `warnOnRescheduleAfterDispose`,
+    `captureStacks`, `priority`. Re-exported from `Leak.js`; typed in
+    `Leak.d.ts` (`RafOrphanKernelOptions`, `RafOrphanFinding`,
+    `RafOrphanRefinedReport`).
+
+- **`createTimerOrphanKernel({ handleRaf })`** -- new option (default
+  `true`, fully backward compatible). Set `false` to make `timer-orphan`
+  cede the rAF patch surface to `raf-orphan`, so both kernels install on the
+  same tracker without a `KernelConflictError`. With `handleRaf: true`, the
+  registry's patch-surface guard correctly refuses to install both -- two
+  kernels double-wrapping rAF is never right.
+
+### Added -- peer matrix (lite-signal assumption contract)
+
+- **`test/peer-assumptions.test.js`** pins every lite-signal owner-tree
+  internal that leak attribution depends on: the `{id, kind}` frame snapshot
+  shape, `ownerOf()` walk termination, `nodeId()` liveness oracle
+  (numeric while live, `undefined` after dispose), `onCleanup` cascade order,
+  `createRoot` owner detachment, and the end-to-end auto-untrack wiring
+  through the real tracker. Runs against whatever lite-signal is installed
+  and banners the resolved version.
+- **`peers.json`** -- single source of truth listing the peer versions the
+  matrix expands over (`baseline` = the 1.8.0 clean base, `rebuilt-latest` =
+  the latest rebuilt 1.9-1.12 prerelease). Edit to point at your exact
+  targets.
+- **`.github/workflows/peer-matrix.yml`** -- fans out over `peers.json` x
+  Node {20, 22}, pins each `@zakkster/lite-signal` spec, and runs the
+  assumptions suite plus the owner-dependent kernel suites. Fires on push/PR,
+  `workflow_dispatch`, and `repository_dispatch: lite-signal-release` so a
+  lite-signal owner-tree change that would break leak attribution fails here
+  *before* it ships there.
+- **`scripts/peer-matrix.mjs`** (`npm run peers:matrix`) -- local sweep that
+  installs each peer in turn, runs the suite, and restores the original
+  installed version on exit. `npm run test:peers` runs the suite against the
+  currently-installed peer.
+
+### Demo
+
+- **`demo/index.html`** -- single-file oscilloscope-themed demo (esm.sh for
+  lite-signal/lite-cleanup, `../Leak.js` for the package). Live rAF-loop
+  scene contrasting an owned loop (auto-cancels on dispose) against an
+  orphaned one (warns, then shows `audit()` catching the armed loop), plus a
+  timer scene. Not shipped in `package.json` `files[]`.
+
+### Hardening (prepublish review)
+
+Four defects found while reviewing 1.1.0 before publish. All are cross-cutting
+patch-lifecycle bugs whose common failure mode is *silence*: a leak detector
+that stops detecting without saying so.
+
+- **Audited-handle walk could not terminate.** A `Set` iterator visits entries
+  added *during* iteration, so a kernel that tracked a new `{ audit: true }`
+  handle from inside its own `forEachAuditedHandle` callback -- the natural
+  "found something suspicious, watch it" pattern -- fed its own walk and hung
+  the process. The walk now iterates a snapshot taken at entry and skips
+  records untracked mid-pass; handles added during a pass are visited on the
+  next one.
+- **Patch claims are now target-scoped, not tracker-scoped.** `registerKernel`'s
+  `patchSurfaces` guard only covers a single tracker, so two trackers (an app's
+  and a test harness's, or two bundled copies) each wrapped the *same* global
+  and neither complained -- then whichever uninstalled first restored the
+  pre-first-patch original, silently disabling the other. Claims now live in a
+  module-scope `WeakMap` keyed by the patch target. A contested surface emits a
+  **`patch-double-install`** finding rather than throwing, since install-without-
+  uninstall is a documented, working pattern.
+- **`uninstall()` no longer clobbers third-party wrappers.** A blind
+  `target[prop] = original` destroyed any wrapper (an APM agent, a test
+  framework, another diagnostic) layered over ours after install. Restore is now
+  identity-checked: our slot is restored, someone else's is left in place and
+  reported as a **`patch-layered`** finding.
+- **`originals` outlives a deliberately-orphaned wrapper.** When a wrapper is
+  left installed, nulling `originals` turned every subsequent timer call into a
+  `TypeError` and every clear into a silent no-op. It is now released only once
+  every slot is ours again.
+
+New finding reasons on `timer-orphan`, `listener-orphan`, and
+`async-retention`: `patch-double-install` and `patch-layered`, each carrying
+`surfaces: string[]` and a human-readable `detail`.
+
+- **`test/torture.test.js`** -- 17-test adversarial suite pinning each defect
+  above plus the invariants that held under attack (wrapper transparency,
+  inert cancel of an unissued id, refine-chain priority and error isolation,
+  no false positives on auto-untracked drops, a throwing `onLeak` consumer not
+  suppressing later reports). The iteration test is deliberately bounded so a
+  regression fails fast instead of hanging the runner.
+
 ## [1.0.0] - 2026-07-07
 
 **Stable release.** Six detection kernels, M2 audit API, M2.5 ecosystem sinks,

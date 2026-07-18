@@ -17,6 +17,7 @@
  */
 
 import { getOwner, onCleanup, nodeId } from '@zakkster/lite-signal';
+import { _claimPatchSurface, _releasePatchSurface, _restoreIfOurs } from '../Leak.js';
 
 const KIND = 'async-retention';
 const EMPTY_OPTIONS = Object.freeze(Object.create(null));
@@ -32,6 +33,8 @@ export function createAsyncRetentionKernel(options) {
   // controller -> state
   const controllers = new Map();
   let originalCtor = null;
+  let ourCtor = null;
+  let claimed = false;
 
   function makePatchedCtor(OriginalCtor) {
     return function PatchedAbortController() {
@@ -90,21 +93,46 @@ export function createAsyncRetentionKernel(options) {
     priority: priority,
 
     install(kernelCtx) {
-      ctx = kernelCtx;
+      // Target-scoped claim: the tracker's own patchSurfaces guard only covers
+      // ONE tracker, so two trackers could both wrap the same AbortController.
       originalCtor = target.AbortController;
       if (typeof originalCtor === 'function') {
-        target.AbortController = makePatchedCtor(originalCtor);
+        claimed = _claimPatchSurface(target, 'AbortController');
+        ourCtor = makePatchedCtor(originalCtor);
+        target.AbortController = ourCtor;
+      }
+      ctx = kernelCtx;
+      if (originalCtor !== undefined && typeof originalCtor === 'function' && !claimed) {
+        ctx.emitFinding({
+          kind: KIND,
+          reason: 'patch-double-install',
+          surfaces: ['AbortController'],
+          detail: 'already patched by another lite-leak kernel instance; both are now active',
+        });
       }
     },
 
     uninstall() {
       if (originalCtor === null) return;
+      let leftInPlace = false;
       if (typeof originalCtor === 'function') {
-        target.AbortController = originalCtor;
+        // Restore only if the slot is still ours; a later wrapper stays.
+        leftInPlace = !_restoreIfOurs(target, 'AbortController', ourCtor, originalCtor);
+        if (leftInPlace && ctx !== null) {
+          ctx.emitFinding({
+            kind: KIND,
+            reason: 'patch-layered',
+            surfaces: ['AbortController'],
+            detail: 'another wrapper was installed over this after this kernel; left in place',
+          });
+        }
       }
-      originalCtor = null;
+      if (claimed) { _releasePatchSurface(target, 'AbortController'); claimed = false; }
+      ourCtor = null;
       controllers.clear();
       ctx = null;
+      // A wrapper we left installed still constructs through originalCtor.
+      if (!leftInPlace) originalCtor = null;
     },
 
     refine(report, leakRecord) {
