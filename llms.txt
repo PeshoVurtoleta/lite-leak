@@ -1,4 +1,4 @@
-@zakkster/lite-leak v1.1.0
+@zakkster/lite-leak v1.2.0
 
 Zero-GC leak diagnostic for the @zakkster/lite-* ecosystem.
 Wraps lite-cleanup's FR primitive with owner-tree attribution and
@@ -181,6 +181,46 @@ createRafOrphanKernel({ target?, warnOnNoOwner?, warnOnRescheduleAfterDispose?, 
   Patch surfaces: ['requestAnimationFrame', 'cancelAnimationFrame'].
   Conflicts with timer-orphan on rAF by design -- run timer-orphan with
   { handleRaf: false } to install both.
+
+KERNELS SHIPPED IN 1.2.0
+------------------------
+createWorkerOrphanKernel({ target?, warnOnNoOwner?, trackObjectURLs?,
+                           captureStacks?, priority? })
+  Patches Worker + SharedWorker (+ URL.revokeObjectURL for bookkeeping when
+  trackObjectURLs, default true). Dropping a Worker reference does NOT stop the
+  thread. Auto-terminates on owner disposal.
+  warning: no-owner-set
+  findings: no-owner-worker-live, owner-disposed-worker-live,
+            blob-url-unrevoked
+  SharedWorker has no terminate(), so it is deliberately NOT auto-reaped on
+  owner disposal -- audit reports owner-disposed-worker-live instead of
+  reporting clean on an agent nothing can stop.
+  Object URLs are ATTRIBUTED not policed: only a blob: URL passed to a worker
+  constructor is recorded. Revoking right after construction is correct and is
+  what @zakkster/lite-worker does.
+
+createAudioNodeKernel({ target?, warnOnNoOwner?, trackSources?,
+                        captureStacks?, priority? })
+  Patches AudioNode.prototype.connect/disconnect and (trackSources, default
+  true) AudioScheduledSourceNode.prototype.start/stop.
+  The hook is connect(), NOT the factory methods: an unconnected node is inert
+  and collectable; a connected node is retained by the audio graph.
+  Full disconnect() reaps; partial disconnect(dest) does not (still audible).
+  warning: no-owner-connect
+  findings: no-owner-node-connected, owner-disposed-node-connected,
+            source-started-not-stopped
+  In-house consumer: @zakkster/lite-audio v1.1.0 (audit() empty after destroy).
+
+createSocketOrphanKernel({ target?, warnOnNoOwner?, captureStacks?, priority? })
+  Patches WebSocket + EventSource. audit() reports by readyState: a socket the
+  peer already closed is NOT a leak.
+  warning: no-owner-open
+  findings: no-owner-socket-open, owner-disposed-socket-open
+  In-house consumer: @zakkster/lite-ws.
+
+All three hold their live registries as WeakRef behind a WeakMap, so the kernel
+never pins the resource it watches and a dropped resource still reaches the FR
+path for refine().
 
 PATCH-LIFECYCLE FINDINGS (all patching kernels)
 ----------------------------------------------

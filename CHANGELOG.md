@@ -3,6 +3,88 @@
 All notable changes to `@zakkster/lite-leak` will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-07-19
+
+**Three resource kernels.** Worker, WebAudio and socket lifecycles -- the three
+remaining leak surfaces in the ecosystem where dropping a JS reference frees
+nothing, because the resource is held by a thread, a render graph or the network
+stack rather than by your heap.
+
+Each kernel ships with its leakforge specimen in the same release
+(`@zakkster/lite-leakforge` 1.2.0). A kernel without an acceptance specimen is
+an untested claim.
+
+### Added -- `worker-orphan` kernel (8th kernel)
+
+- **`createWorkerOrphanKernel(options?)`** -- Worker / SharedWorker instances
+  that outlive their owner without `terminate()`. Dropping the last reference
+  does not stop the thread: the agent keeps its heap and message queue for the
+  lifetime of the document.
+  - Auto-terminates on owner disposal; warns `no-owner-set` at construction
+    outside any owner.
+  - `audit()` surfaces `no-owner-worker-live` and `owner-disposed-worker-live`.
+    A **SharedWorker is deliberately never auto-reaped**: it exposes no
+    `terminate()`, so the constructing context cannot stop it. Reaping it would
+    report clean on an agent that is provably still running, so the
+    registration stays and audit reports it.
+  - **Object URLs are attributed, not policed.** Only a `blob:` URL actually
+    passed to a worker constructor is recorded, and `URL.revokeObjectURL` is
+    patched for bookkeeping alone. Patching `createObjectURL` wholesale would
+    report every image and download blob as a worker finding -- the same
+    category error that made `timer-orphan` model a render loop as a fire-once
+    timer. Reason: `blob-url-unrevoked`. Disable with `trackObjectURLs: false`.
+  - Revoking immediately after construction is correct (the worker script is
+    fetched during construction), so `@zakkster/lite-worker` -- which revokes on
+    the next line -- is clean here by design rather than by luck.
+  - Options: `target`, `warnOnNoOwner`, `trackObjectURLs`, `captureStacks`,
+    `priority`.
+
+### Added -- `audio-node` kernel (9th kernel)
+
+- **`createAudioNodeKernel(options?)`** -- WebAudio nodes left wired into the
+  render graph, and scheduled sources started but never stopped. A connected
+  node is referenced by the audio graph, so a heap snapshot showing no JS
+  references is not evidence of anything.
+  - **The hook is `connect()`, not the factory methods.** A node that is
+    constructed and never connected is inert and collectable; it becomes
+    retained at the moment it joins the graph. Patching `createGain` and friends
+    would tag hundreds of harmless nodes and miss the one property that matters.
+  - A full `disconnect()` reaps. A partial `disconnect(destination)` does not --
+    the node is still audible, and treating a partial teardown as a full one
+    would report clean on a node that is still rendering.
+  - Owner disposal stops a playing source before disconnecting it: leaving a
+    started source connected is the audible half of the leak.
+  - Reasons: `no-owner-connect` (warning), `no-owner-node-connected`,
+    `owner-disposed-node-connected`, `source-started-not-stopped`.
+  - Options: `target`, `warnOnNoOwner`, `trackSources`, `captureStacks`,
+    `priority`. In-house consumer: `@zakkster/lite-audio` v1.1.0, whose
+    `destroy()` should leave `audit()` empty.
+
+### Added -- `socket-orphan` kernel (10th kernel)
+
+- **`createSocketOrphanKernel(options?)`** -- WebSocket / EventSource
+  connections never `close()`d. An open socket is held by the network stack;
+  an EventSource additionally keeps reconnecting on a timer forever.
+  - `audit()` reports by `readyState`, not by bookkeeping: a connection the peer
+    already closed is not a leak, so only `CONNECTING` or `OPEN` counts.
+  - Reasons: `no-owner-open` (warning), `no-owner-socket-open`,
+    `owner-disposed-socket-open`. In-house consumer: `@zakkster/lite-ws`.
+
+### Changed
+
+- **The new kernels never pin what they watch.** Their live registries hold
+  `WeakRef`s behind a `WeakMap`, unlike `observer-orphan`'s strong `Map`. A
+  detector that pins its subjects prevents the very collection it exists to
+  observe -- a tracked worker could never reach the FR path. `audit()` prunes
+  dead refs as it walks, so a dropped-and-never-terminated resource surfaces on
+  the FR channel and is classified by `refine()`.
+- All three kernels are built on the 1.1.0 patch-claim hardening: target-scoped
+  claims, `patch-double-install` / `patch-layered` findings, identity-checked
+  restore. `PatchLifecycleFinding` in `Leak.d.ts` widened to cover them.
+- `test/_helpers/resources.js` -- deterministic mock Worker, WebAudio and socket
+  hosts. Node has none of these globals, and patching a real one would leak
+  claims into unrelated tests, so every host is a fresh local object.
+
 ## [1.1.0] - 2026-07-15
 
 **Peer matrix + raf-orphan kernel.** The urgent half of the level-up: CI

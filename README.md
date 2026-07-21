@@ -13,7 +13,7 @@
 
 `lite-leak` wraps [`@zakkster/lite-cleanup`](https://github.com/PeshoVurtoleta/lite-cleanup) with owner-tree attribution from [`@zakkster/lite-signal`](https://github.com/PeshoVurtoleta/lite-signal) 1.5.0+. Track a target for GC observation; if it survives past its owner's cleanup, you get a structured leak report with the owner path snapshot at track-time.
 
-**Status:** v1.1.0 -- **stable**. Seven detection kernels shipped (raf-orphan added in 1.1.0). Full M2 audit API (`auditByKind`, `auditByOwner`, `remediate`). Four ecosystem sinks (`createTraceSink`, `createGenericSink`, `createProfilerSignalSink`, `createStudioSink`). Peer matrix validating owner-frame assumptions against the lite-signal 1.8.0 base and the rebuilt 1.9-1.12 line. Retained-heap budget suite. WHY-1.0.md and REJECTED.md ship in-tree. The `lite-leakforge` demo/toolkit product builds on top as a separate package.
+**Status:** v1.2.0 -- **stable**. Ten detection kernels shipped (raf-orphan in 1.1.0; worker-orphan, audio-node and socket-orphan in 1.2.0). Full M2 audit API (`auditByKind`, `auditByOwner`, `remediate`). Four ecosystem sinks (`createTraceSink`, `createGenericSink`, `createProfilerSignalSink`, `createStudioSink`). Peer matrix validating owner-frame assumptions against the lite-signal 1.8.0 base and the rebuilt 1.9-1.12 line. Retained-heap budget suite. WHY-1.0.md and REJECTED.md ship in-tree. The `lite-leakforge` demo/toolkit product builds on top as a separate package.
 
 - Single-file ESM, no bundled deps, ASCII-only source
 - Auto-untrack via `lite-signal`'s `onCleanup`: any FR-fired collection is *by definition* a target that outlived its owner
@@ -440,6 +440,58 @@ Patch surfaces claimed: `['requestAnimationFrame', 'cancelAnimationFrame']`. It 
 tracker.registerKernel(createTimerOrphanKernel({ handleRaf: false }));
 tracker.registerKernel(createRafOrphanKernel());
 ```
+
+### `createWorkerOrphanKernel({ target?, warnOnNoOwner?, trackObjectURLs?, captureStacks?, priority? })` (shipped in 1.2.0)
+
+Patches `Worker` and `SharedWorker`. Dropping the last reference to a Worker does not stop it -- the agent keeps its thread, heap and message queue until the document unloads, which is invisible to any tool that only walks the main-thread graph. Constructed inside an effect, the worker is terminated on owner disposal. Constructed outside any owner, it emits `onWarning` with `{ kind: 'worker-orphan', reason: 'no-owner-set', workerKind, origin }`.
+
+`audit()` reports `no-owner-worker-live` and `owner-disposed-worker-live`. A **SharedWorker is deliberately never auto-terminated**: it exposes no `terminate()`, so the constructing context cannot stop it. Rather than reap it and report clean on an agent that is still running, the registration stays and audit surfaces it.
+
+Object URLs are **attributed, not policed**. Only a `blob:` URL actually passed to a worker constructor is recorded; `URL.revokeObjectURL` is patched for bookkeeping alone and emits nothing on its own. Patching `createObjectURL` globally would report every image blob in your app as a worker finding. A worker whose URL was never revoked gets `blob-url-unrevoked`; pass `trackObjectURLs: false` to leave the surface untouched.
+
+```js
+tracker.registerKernel(createWorkerOrphanKernel());
+
+effect(() => {
+  const w = new Worker('/render.js');   // auto-terminated on dispose
+});
+
+const stray = new Worker('/render.js'); // -> onWarning: no-owner-set
+```
+
+Revoking immediately after construction is correct -- the worker script is fetched during construction -- so `@zakkster/lite-worker`, which revokes on the next line, is clean here by design.
+
+### `createAudioNodeKernel({ target?, warnOnNoOwner?, trackSources?, captureStacks?, priority? })` (shipped in 1.2.0)
+
+Patches `AudioNode.prototype.connect` / `disconnect` and, when `trackSources` is on, `AudioScheduledSourceNode.prototype.start` / `stop`.
+
+A connected `AudioNode` is referenced by the audio graph, not just by your JavaScript, so dropping the reference to a still-connected node frees nothing and a heap snapshot showing no JS references proves nothing. That is why **the hook is `connect()` rather than the factory methods**: a node that is constructed and never connected is inert and collectable, and a node becomes retained the moment it joins the graph.
+
+A full `disconnect()` reaps. A partial `disconnect(destination)` does not -- the node is still audible through its other outputs. Owner disposal stops a playing source before disconnecting it.
+
+| Reason | Channel | Meaning |
+|---|---|---|
+| `no-owner-connect` | warning | node joined the graph outside any owner |
+| `no-owner-node-connected` | finding | still connected, no owner will disconnect it |
+| `owner-disposed-node-connected` | finding | owner gone, node still in the graph |
+| `source-started-not-stopped` | finding | source is still rendering its buffer |
+
+In-house consumer: `@zakkster/lite-audio` v1.1.0. Install the kernel around a `LiteAudio` lifecycle and `audit()` should be empty after `destroy()`:
+
+```js
+tracker.registerKernel(createAudioNodeKernel());
+const audio = new LiteAudio();
+await audio.init(new AudioContext());
+// ... play, crossfade, bus routing ...
+audio.destroy();
+assert.deepEqual(tracker.audit(), []);   // anything left is a real graph leak
+```
+
+### `createSocketOrphanKernel({ target?, warnOnNoOwner?, captureStacks?, priority? })` (shipped in 1.2.0)
+
+Patches `WebSocket` and `EventSource`. An open socket is held by the network stack, not by your JavaScript: dropping the reference leaves the connection open, the server-side session live, and an `EventSource` reconnecting on a timer forever. This is the leak that presents as "the app gets slower the longer you navigate" rather than as a heap graph anyone can read.
+
+`audit()` reports by `readyState` rather than by bookkeeping -- a connection the peer already closed is not a leak, so only `CONNECTING` or `OPEN` counts. Reasons: `no-owner-open` (warning), `no-owner-socket-open`, `owner-disposed-socket-open`. In-house consumer: `@zakkster/lite-ws`.
 
 ## Patch-lifecycle findings (all patching kernels)
 

@@ -219,8 +219,7 @@ export interface TimerOrphanKernelOptions {
 }
 
 /**
- * Emitted via `onFinding` by every patching kernel (`timer-orphan`,
- * `listener-orphan`, `async-retention`) to report a patch-lifecycle anomaly
+ * Emitted via `onFinding` by every patching kernel to report a patch-lifecycle anomaly
  * rather than a leak.
  *
  * Patch claims are scoped to the patch TARGET (a module-level WeakMap), not to
@@ -237,7 +236,9 @@ export interface TimerOrphanKernelOptions {
  * which is why they are a separate shape from the leak findings below.
  */
 export interface PatchLifecycleFinding<T = unknown> extends KernelFinding<T> {
-  readonly kind: 'timer-orphan' | 'listener-orphan' | 'async-retention';
+  readonly kind:
+    | 'timer-orphan' | 'listener-orphan' | 'async-retention'
+    | 'worker-orphan' | 'audio-node' | 'socket-orphan';
   readonly reason: 'patch-double-install' | 'patch-layered';
   readonly surfaces: readonly string[];
   readonly detail: string;
@@ -405,6 +406,115 @@ export interface RafOrphanRefinedReport<T = unknown> extends LeakReport<T> {
  * `{ handleRaf: false }`.
  */
 export function createRafOrphanKernel(options?: RafOrphanKernelOptions): Kernel;
+
+// -----------------------------------------------------------------
+// Kernel: worker-orphan (1.2.0)
+// -----------------------------------------------------------------
+
+export interface WorkerOrphanKernelOptions {
+  /** Object whose Worker constructors are replaced. Default globalThis. */
+  target?: object;
+  warnOnNoOwner?: boolean;
+  /**
+   * Record `blob:` URLs passed to a worker constructor and patch
+   * URL.revokeObjectURL for bookkeeping, so audit() can report a worker whose
+   * object URL was never revoked. Only worker-attributed URLs are reported --
+   * the URL surface is never policed globally. Default true.
+   */
+  trackObjectURLs?: boolean;
+  captureStacks?: boolean;
+  priority?: number;
+}
+
+export type WorkerKind = 'Worker' | 'SharedWorker';
+
+export interface WorkerOrphanFinding<T = unknown> extends KernelFinding<T> {
+  readonly kind: 'worker-orphan';
+  readonly reason:
+    | 'no-owner-set'
+    | 'no-owner-worker-live'
+    | 'owner-disposed-worker-live'
+    | 'blob-url-unrevoked';
+  readonly workerKind: WorkerKind;
+  readonly origin: string | null;
+}
+
+export interface WorkerOrphanRefinedReport<T = unknown> extends LeakReport<T> {
+  readonly kind: 'worker-orphan';
+  readonly workerKind: WorkerKind;
+  readonly wasTerminated: boolean;
+}
+
+export function createWorkerOrphanKernel(options?: WorkerOrphanKernelOptions): Kernel;
+
+// -----------------------------------------------------------------
+// Kernel: audio-node (1.2.0)
+// -----------------------------------------------------------------
+
+export interface AudioNodeKernelOptions {
+  /**
+   * Object exposing `AudioNode` and optionally `AudioScheduledSourceNode`.
+   * Default globalThis.
+   */
+  target?: object;
+  warnOnNoOwner?: boolean;
+  /**
+   * Also patch start()/stop() on AudioScheduledSourceNode to report sources
+   * started and never stopped. Default true.
+   */
+  trackSources?: boolean;
+  captureStacks?: boolean;
+  priority?: number;
+}
+
+export interface AudioNodeFinding<T = unknown> extends KernelFinding<T> {
+  readonly kind: 'audio-node';
+  readonly reason:
+    | 'no-owner-connect'
+    | 'no-owner-node-connected'
+    | 'owner-disposed-node-connected'
+    | 'source-started-not-stopped';
+  readonly origin: string | null;
+}
+
+export interface AudioNodeRefinedReport<T = unknown> extends LeakReport<T> {
+  readonly kind: 'audio-node';
+  readonly wasDisconnected: boolean;
+}
+
+export function createAudioNodeKernel(options?: AudioNodeKernelOptions): Kernel;
+
+// -----------------------------------------------------------------
+// Kernel: socket-orphan (1.2.0)
+// -----------------------------------------------------------------
+
+export interface SocketOrphanKernelOptions {
+  /** Object whose socket constructors are replaced. Default globalThis. */
+  target?: object;
+  warnOnNoOwner?: boolean;
+  captureStacks?: boolean;
+  priority?: number;
+}
+
+export type SocketKind = 'WebSocket' | 'EventSource';
+
+export interface SocketOrphanFinding<T = unknown> extends KernelFinding<T> {
+  readonly kind: 'socket-orphan';
+  readonly reason:
+    | 'no-owner-open'
+    | 'no-owner-socket-open'
+    | 'owner-disposed-socket-open';
+  readonly socketKind: SocketKind;
+  readonly origin: string | null;
+}
+
+export interface SocketOrphanRefinedReport<T = unknown> extends LeakReport<T> {
+  readonly kind: 'socket-orphan';
+  readonly socketKind: SocketKind;
+  readonly wasClosed: boolean;
+}
+
+export function createSocketOrphanKernel(options?: SocketOrphanKernelOptions): Kernel;
 
 // -----------------------------------------------------------------
 // M2: audit API extensions -- see LeakTracker interface above.
