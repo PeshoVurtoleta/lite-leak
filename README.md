@@ -13,7 +13,7 @@
 
 `lite-leak` wraps [`@zakkster/lite-cleanup`](https://github.com/PeshoVurtoleta/lite-cleanup) with owner-tree attribution from [`@zakkster/lite-signal`](https://github.com/PeshoVurtoleta/lite-signal) 1.5.0+. Track a target for GC observation; if it survives past its owner's cleanup, you get a structured leak report with the owner path snapshot at track-time.
 
-**Status:** v1.2.0 -- **stable**. Ten detection kernels shipped (raf-orphan in 1.1.0; worker-orphan, audio-node and socket-orphan in 1.2.0). Full M2 audit API (`auditByKind`, `auditByOwner`, `remediate`). Four ecosystem sinks (`createTraceSink`, `createGenericSink`, `createProfilerSignalSink`, `createStudioSink`). Peer matrix validating owner-frame assumptions against the lite-signal 1.8.0 base and the rebuilt 1.9-1.12 line. Retained-heap budget suite. WHY-1.0.md and REJECTED.md ship in-tree. The `lite-leakforge` demo/toolkit product builds on top as a separate package.
+**Status:** v1.2.1 -- **stable**. Ten detection kernels shipped (raf-orphan in 1.1.0; worker-orphan, audio-node and socket-orphan in 1.2.0). Full M2 audit API (`auditByKind`, `auditByOwner`, `remediate`). Four ecosystem sinks (`createTraceSink`, `createGenericSink`, `createProfilerSignalSink`, `createStudioSink`). Peer matrix validating owner-frame assumptions against the lite-signal 1.8.0 base and the rebuilt 1.9-1.12 line. Retained-heap budget suite. WHY-1.0.md and REJECTED.md ship in-tree. The `lite-leakforge` demo/toolkit product builds on top as a separate package.
 
 - Single-file ESM, no bundled deps, ASCII-only source
 - Auto-untrack via `lite-signal`'s `onCleanup`: any FR-fired collection is *by definition* a target that outlived its owner
@@ -492,6 +492,25 @@ assert.deepEqual(tracker.audit(), []);   // anything left is a real graph leak
 Patches `WebSocket` and `EventSource`. An open socket is held by the network stack, not by your JavaScript: dropping the reference leaves the connection open, the server-side session live, and an `EventSource` reconnecting on a timer forever. This is the leak that presents as "the app gets slower the longer you navigate" rather than as a heap graph anyone can read.
 
 `audit()` reports by `readyState` rather than by bookkeeping -- a connection the peer already closed is not a leak, so only `CONNECTING` or `OPEN` counts. Reasons: `no-owner-open` (warning), `no-owner-socket-open`, `owner-disposed-socket-open`. In-house consumer: `@zakkster/lite-ws`.
+
+## Fail-closed on input (1.2.1)
+
+Every input the tracker does not understand is rejected at the boundary, because the alternative is a detector that reports clean for a reason nobody can see. Green must mean "I looked and found nothing", never "I did not look".
+
+| Input | Behaviour |
+|---|---|
+| Unknown `createLeakTracker` option (`{ onLeek }`) | throws, names the key you meant |
+| Unknown `track()` option (`{ audti: true }`) | throws, names the key you meant |
+| Misspelled kernel hook (`audti()`, `instal()`) | throws; `_`-prefixed and unrelated keys are untouched |
+| Non-callable handler (`onWarning: 42`) | throws at construction, not at report time |
+| Non-finite `priority` (`NaN`, `Infinity`, `'5'`) | throws |
+| Non-array `patchSurfaces`, or surfaces with no `install()` | throws |
+| `track()` on a primitive | throws a lite-leak error naming the argument |
+| `untrack()` with a foreign handle | no-op -- never a decrement |
+
+That last row was the serious one. `untrack()` used to pass any object to the peer registry, which decremented its counter regardless of whether it had issued that handle, so three foreign untracks against three live handles drove `size()` to 0 while all three were still tracked. `size()` is a leak oracle; it now fails closed and can never report a negative count.
+
+Pure classifier kernels with only `refine()`/`audit()` and no `install()` remain legal -- not every kernel patches something.
 
 ## Patch-lifecycle findings (all patching kernels)
 

@@ -1,4 +1,4 @@
-@zakkster/lite-leak v1.2.0
+@zakkster/lite-leak v1.2.1
 
 Zero-GC leak diagnostic for the @zakkster/lite-* ecosystem.
 Wraps lite-cleanup's FR primitive with owner-tree attribution and
@@ -221,6 +221,30 @@ createSocketOrphanKernel({ target?, warnOnNoOwner?, captureStacks?, priority? })
 All three hold their live registries as WeakRef behind a WeakMap, so the kernel
 never pins the resource it watches and a dropped resource still reaches the FR
 path for refine().
+
+FAIL-CLOSED INPUT VALIDATION (1.2.1)
+------------------------------------
+Everything the tracker does not understand throws at the boundary. Rationale:
+a leak detector that accepts bad config and reports clean is indistinguishable
+from a clean run.
+
+  createLeakTracker: unknown option keys throw with a did-you-mean hint.
+    Known: name, captureStacks, onLeak, onError, onFinding, onWarning.
+    Handlers must be functions when present (rejected at construction, NOT at
+    report time).
+  track(): unknown option keys throw (known: audit). Checked with a
+    non-allocating for...in because track() is a hot path.
+    target must be object | function | symbol; primitives throw a lite-leak
+    error naming the argument.
+  untrack(): identity-checked against handles this tracker issued. A foreign
+    object or primitive is a NO-OP and never decrements size(). size() can
+    never go negative. Owner auto-untrack routes through the same guard.
+  registerKernel: a key 1-2 edits from a lifecycle hook (name, patchSurfaces,
+    priority, install, uninstall, refine, audit, advise) throws as a typo.
+    Underscore-prefixed keys and unrelated state are allowed. Hooks must be
+    functions when present. priority must be finite. patchSurfaces must be an
+    array, and declaring non-empty patchSurfaces requires install().
+    Kernels with only refine()/audit() and no install() are legal.
 
 PATCH-LIFECYCLE FINDINGS (all patching kernels)
 ----------------------------------------------

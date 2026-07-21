@@ -231,9 +231,9 @@ test('VERSION is not left behind by a release bump', async () => {
 
 test('kernel lifecycle: conflicts, rollback, re-registration', () => {
   const tracker = createLeakTracker({ name: 'life' });
-  tracker.registerKernel({ name: 'a', patchSurfaces: ['s'] });
+  tracker.registerKernel({ name: 'a', patchSurfaces: ['s'], install() {} });
   assert.throws(() => tracker.registerKernel({ name: 'a' }), KernelConflictError);
-  assert.throws(() => tracker.registerKernel({ name: 'b', patchSurfaces: ['s'] }), KernelConflictError);
+  assert.throws(() => tracker.registerKernel({ name: 'b', patchSurfaces: ['s'], install() {} }), KernelConflictError);
   assert.throws(() => tracker.registerKernel({
     name: 'c', patchSurfaces: ['r'], install() { throw new Error('install failed'); },
   }), /install failed/);

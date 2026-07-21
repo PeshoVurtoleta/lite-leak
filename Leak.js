@@ -12,7 +12,7 @@
 import { createDisposalRegistry } from '@zakkster/lite-cleanup';
 import { getOwner, ownerOf, onCleanup, nodeId, describe } from '@zakkster/lite-signal';
 
-export const VERSION = '1.2.0';
+export const VERSION = '1.2.1';
 
 const EMPTY_OPTIONS = Object.freeze(Object.create(null));
 
@@ -137,6 +137,99 @@ export function _restoreIfOurs(target, prop, ourWrapper, original) {
   return true;
 }
 
+/**
+ * Option keys accepted by `createLeakTracker`. Anything else is a typo, and a
+ * typo in a diagnostic tool's config is the most dangerous input it can take:
+ * `{ onLeek }` used to be accepted in silence, which meant leaks were observed,
+ * classified, and then reported to nobody. The build stayed green because
+ * nothing was listening. Fail closed instead.
+ * @private
+ */
+const TRACKER_OPTION_KEYS = [
+  'name', 'captureStacks', 'onLeak', 'onError', 'onFinding', 'onWarning',
+];
+
+/** Every key the kernel contract defines. @private */
+const KERNEL_KEYS = [
+  'name', 'patchSurfaces', 'priority',
+  'install', 'uninstall', 'refine', 'audit', 'advise',
+];
+
+/** Option keys accepted by `track()`. @private */
+const TRACK_OPTION_KEYS = ['audit'];
+
+/** Handler options that must be callable when present. @private */
+const TRACKER_HANDLER_KEYS = ['onLeak', 'onError', 'onFinding', 'onWarning'];
+
+/**
+ * Levenshtein distance, capped. Used only on the error path, so the allocation
+ * never appears in a hot body.
+ * @private
+ */
+function editDistance(a, b) {
+  const al = a.length;
+  const bl = b.length;
+  if (al === 0) return bl;
+  if (bl === 0) return al;
+  let prev = new Array(bl + 1);
+  let cur = new Array(bl + 1);
+  for (let j = 0; j <= bl; j++) prev[j] = j;
+  for (let i = 1; i <= al; i++) {
+    cur[0] = i;
+    for (let j = 1; j <= bl; j++) {
+      const cost = a.charCodeAt(i - 1) === b.charCodeAt(j - 1) ? 0 : 1;
+      let m = prev[j] + 1;
+      const d = cur[j - 1] + 1;
+      if (d < m) m = d;
+      const s = prev[j - 1] + cost;
+      if (s < m) m = s;
+      cur[j] = m;
+    }
+    const swap = prev; prev = cur; cur = swap;
+  }
+  return prev[bl];
+}
+
+/**
+ * Nearest known key to `key`, or null when nothing is close enough. The
+ * threshold scales with key length so short keys do not match everything.
+ * @private
+ */
+function nearestKey(key, allowed) {
+  let best = null;
+  let bestDist = Infinity;
+  const limit = key.length <= 4 ? 1 : (key.length <= 8 ? 2 : 3);
+  for (let i = 0; i < allowed.length; i++) {
+    const d = editDistance(key.toLowerCase(), allowed[i].toLowerCase());
+    if (d < bestDist) { bestDist = d; best = allowed[i]; }
+  }
+  return bestDist <= limit ? best : null;
+}
+
+/**
+ * Reject unknown option keys, naming the key the caller probably meant.
+ * One-shot paths only (tracker construction, kernel registration): it walks
+ * `Object.keys`, which allocates.
+ * @private
+ */
+function assertKnownOptions(options, allowed, label) {
+  if (options === null || options === undefined) return;
+  if (typeof options !== 'object') {
+    throw new TypeError(label + ': options must be an object, got ' + typeof options);
+  }
+  const keys = Object.keys(options);
+  for (let i = 0; i < keys.length; i++) {
+    const k = keys[i];
+    if (allowed.indexOf(k) !== -1) continue;
+    const near = nearestKey(k, allowed);
+    throw new TypeError(
+      label + ': unknown option "' + k + '"' +
+      (near !== null ? ' -- did you mean "' + near + '"?' : '') +
+      ' Known options: ' + allowed.join(', ') + '.'
+    );
+  }
+}
+
 function snapshotOwnerPath(ownerHandle) {
   const path = [];
   let cursor = ownerHandle;
@@ -166,7 +259,22 @@ function snapshotOwnerPath(ownerHandle) {
  *   owner"). Different semantic urgency from onLeak (confirmed FR fire).
  */
 export function createLeakTracker(options) {
+  assertKnownOptions(options, TRACKER_OPTION_KEYS, 'createLeakTracker');
   const opts = options || EMPTY_OPTIONS;
+  // A non-callable handler used to be accepted here and only fail later, from
+  // inside emit -- meaning the tracker worked perfectly until the moment it had
+  // something to report, then destroyed the report and logged an error instead.
+  // Pass quietly, break only when you were right. Reject it now.
+  for (let i = 0; i < TRACKER_HANDLER_KEYS.length; i++) {
+    const k = TRACKER_HANDLER_KEYS[i];
+    const v = opts[k];
+    if (v !== undefined && typeof v !== 'function') {
+      throw new TypeError(
+        'createLeakTracker: options.' + k + ' must be a function, got ' + typeof v +
+        '. A non-callable handler silently discards every event on that channel.'
+      );
+    }
+  }
   const name = opts.name || 'lite-leak';
   const captureStacks = opts.captureStacks === true;
   const onLeak = opts.onLeak;
@@ -184,6 +292,10 @@ export function createLeakTracker(options) {
   // Iterated by kernels via ctx.forEachAuditedHandle. Disposed records are
   // reaped lazily during iteration.
   const auditedRecords = new Set();
+  // Handles this tracker issued and has not yet released. Weak, so it never
+  // pins a handle, and identity-checked so a foreign object cannot decrement
+  // the live count (see untrack).
+  const issuedHandles = new WeakSet();
 
   // Error routing is factored into a top-level helper so the factory stays
   // lean and the routing behavior is one testable path (see createErrorRouter).
@@ -300,6 +412,34 @@ export function createLeakTracker(options) {
   // Public tracker API
   // -----------------------------------------------------------------
   function track(target, cleanup, tag, options) {
+    // Hot path: validate without allocating. `for...in` over a small literal
+    // uses V8's enum cache and adds no bytes to the body; Object.keys would
+    // allocate an array on every tracked resource. A typo here
+    // (`{ audti: true }`) used to mean the record was silently never audited,
+    // so audit() reported clean on a resource nobody was watching.
+    if (options !== undefined && options !== null) {
+      for (const k in options) {
+        if (k !== 'audit') {
+          const near = nearestKey(k, TRACK_OPTION_KEYS);
+          throw new TypeError(
+            'track: unknown option "' + k + '"' +
+            (near !== null ? ' -- did you mean "' + near + '"?' : '') +
+            ' Known options: ' + TRACK_OPTION_KEYS.join(', ') + '.'
+          );
+        }
+      }
+    }
+    // FinalizationRegistry rejects non-objects with a message that names
+    // neither this package nor the argument. Say which argument, and say it
+    // before V8 does.
+    if (target === null || (typeof target !== 'object' && typeof target !== 'function' &&
+        typeof target !== 'symbol')) {
+      throw new TypeError(
+        'track: target must be an object, function or symbol (got ' +
+        (target === null ? 'null' : typeof target) +
+        '). Primitives cannot be observed for collection.'
+      );
+    }
     const opts = options || EMPTY_OPTIONS;
     const audit = opts.audit === true;
     const ownerHandle = getOwner();
@@ -321,14 +461,28 @@ export function createLeakTracker(options) {
     };
     const handle = registry.register(target, cleanup, leakRecord);
     leakRecord.handle = handle;
+    issuedHandles.add(handle);
     if (audit) auditedRecords.add(leakRecord);
     if (ownerHandle !== undefined) {
-      onCleanup(function () { registry.unregister(handle); });
+      // Route through untrack() rather than the registry directly, so the
+      // issued-handle set stays in step and a later manual untrack of the same
+      // handle is a clean no-op instead of a second decrement.
+      onCleanup(function () { untrack(handle); });
     }
     return handle;
   }
 
   function untrack(handle) {
+    // Only unregister handles this tracker actually issued. An arbitrary object
+    // used to pass straight through to the peer registry, which decremented its
+    // counter anyway: three foreign untracks against three live handles drove
+    // size() to 0 while all three were still tracked, and a gate reading size()
+    // as "nothing pending" would have called that clean. size() is a leak
+    // oracle, so it fails closed -- an unrecognised handle is a no-op, never a
+    // decrement.
+    if (handle === null || typeof handle !== 'object') return;
+    if (!issuedHandles.has(handle)) return;
+    issuedHandles.delete(handle);
     registry.unregister(handle);
     // Audited records reap lazily on next audit iteration -- no work here.
   }
@@ -351,6 +505,68 @@ export function createLeakTracker(options) {
     if (claimedNames.has(kernel.name)) {
       throw new KernelConflictError(
         'kernel with name "' + kernel.name + '" already registered'
+      );
+    }
+    // A kernel hook that is misspelled reads exactly like a hook that was
+    // deliberately not implemented, so `audti()` used to register happily and
+    // detect nothing for the life of the process -- a leak detector reporting
+    // clean because its detector never ran. Pure classifier kernels with only
+    // refine()/audit() are legitimate, so the rule is not "install is
+    // mandatory": it is that a key one or two edits away from a lifecycle hook
+    // is a typo, not a feature. Underscore-prefixed keys (private probes like
+    // _liveCount) and genuinely unrelated state are left alone.
+    const ownKeys = Object.keys(kernel);
+    for (let i = 0; i < ownKeys.length; i++) {
+      const k = ownKeys[i];
+      if (KERNEL_KEYS.indexOf(k) !== -1) continue;
+      if (k.charCodeAt(0) === 95) continue;              // '_' private
+      const near = nearestKey(k, KERNEL_KEYS);
+      if (near !== null) {
+        throw new TypeError(
+          'registerKernel: kernel "' + kernel.name + '" has key "' + k +
+          '" -- did you mean "' + near + '"? A misspelled hook is indistinguishable ' +
+          'from an unimplemented one, so it would silently never run. ' +
+          'Prefix with "_" if the name is intentional.'
+        );
+      }
+    }
+    // A kernel that declares patch surfaces but cannot install them would claim
+    // those globals and then never wrap anything -- worse than not registering,
+    // because the claim blocks a kernel that would have worked.
+    const declaresSurfaces = Array.isArray(kernel.patchSurfaces) && kernel.patchSurfaces.length > 0;
+    if (declaresSurfaces && typeof kernel.install !== 'function') {
+      throw new TypeError(
+        'registerKernel: kernel "' + kernel.name + '" declares patchSurfaces but has no ' +
+        'install() -- it would claim those surfaces and patch nothing.'
+      );
+    }
+    for (const hook of ['install', 'uninstall', 'refine', 'audit', 'advise']) {
+      const v = kernel[hook];
+      if (v !== undefined && v !== null && typeof v !== 'function') {
+        throw new TypeError(
+          'registerKernel: kernel.' + hook + ' must be a function when present (kernel "' +
+          kernel.name + '"), got ' + typeof v + '.'
+        );
+      }
+    }
+    // NaN compares false against every value, so a NaN priority silently
+    // defeats the refine-chain and audit ordering instead of sorting anywhere.
+    if (kernel.priority !== undefined && kernel.priority !== null) {
+      if (typeof kernel.priority !== 'number' || !Number.isFinite(kernel.priority)) {
+        throw new TypeError(
+          'registerKernel: kernel.priority must be a finite number (kernel "' +
+          kernel.name + '"), got ' +
+          (typeof kernel.priority === 'number' ? String(kernel.priority) : typeof kernel.priority) +
+          '. A non-finite priority makes refine-chain order undefined.'
+        );
+      }
+    }
+    if (kernel.patchSurfaces !== undefined && kernel.patchSurfaces !== null &&
+        !Array.isArray(kernel.patchSurfaces)) {
+      throw new TypeError(
+        'registerKernel: kernel.patchSurfaces must be an array when present (kernel "' +
+        kernel.name + '"), got ' + typeof kernel.patchSurfaces +
+        '. A non-array surface list would silently claim nothing.'
       );
     }
     // Patch-surface conflict guard. Each kernel declares which globals /

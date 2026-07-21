@@ -3,6 +3,77 @@
 All notable changes to `@zakkster/lite-leak` will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.1] - 2026-07-21
+
+**Fail-closed on input.** A day spent attacking the engine's boundaries instead
+of using it. Seven defects, all one shape: the tracker accepted something it did
+not understand and then reported clean. For a leak detector that is the only
+failure that matters -- green has to mean "I looked and found nothing", never
+"I did not look".
+
+### Fixed -- the live count could be deflated by a foreign handle
+
+- **`untrack()` is identity-checked.** It passed any object straight to the peer
+  disposal registry, which decremented its counter regardless of whether it had
+  ever issued that handle. Three foreign untracks against three live handles
+  drove `size()` to **0 while all three were still tracked**; a gate asserting
+  `size() === 0` would have called that clean. `size()` is a leak oracle, so an
+  unrecognised handle is now a no-op, never a decrement, and the count can no
+  longer go negative. Handles issued by a tracker are recorded in a `WeakSet`
+  (weak, so it never pins one), and owner auto-untrack routes through the same
+  guarded path so a later manual untrack is a clean no-op.
+
+### Fixed -- configuration typos were accepted in silence
+
+- **Unknown `createLeakTracker` options throw, naming the key you meant.**
+  `{ onLeek }` was accepted happily: leaks were observed, classified, and
+  reported to nobody while the build stayed green.
+- **Unknown `track()` options throw.** `{ audti: true }` produced a record
+  nobody audited, so `audit()` reported clean on a resource that was never being
+  watched. The check is a non-allocating `for...in`, because `track()` is a hot
+  path and `Object.keys` would allocate per tracked resource.
+- **Misspelled kernel hooks throw.** `audti()` is indistinguishable from "this
+  kernel has no audit phase", so a typo registered happily and detected nothing
+  for the life of the process. A key one or two edits from a lifecycle hook is
+  now a typo, not a feature; underscore-prefixed keys (`_liveCount`) and
+  unrelated kernel state are untouched. Pure `refine()`/`audit()` classifier
+  kernels with no `install()` remain legal.
+
+### Fixed -- types that only failed on the reporting path
+
+- **Non-callable handlers are rejected at construction.** `onWarning: 42`
+  constructed a perfectly working tracker that broke the instant it had
+  something to report, converting the warning into an error log. Pass quietly,
+  break only when you were right.
+- **Non-finite `priority` is rejected.** `NaN` compares false against every
+  value, so it did not sort low -- it sorted nowhere, silently reordering a
+  refine chain that is first-non-null-wins. `Infinity` and numeric strings are
+  rejected too.
+- **Non-array `patchSurfaces` is rejected** instead of silently claiming
+  nothing. A kernel that declares surfaces but has no `install()` is rejected
+  as well: it would claim those globals and patch nothing, which is worse than
+  not registering, because the claim blocks a kernel that would have worked.
+- **`track()` on a primitive** throws a lite-leak error naming the argument
+  instead of a raw `FinalizationRegistry.prototype.register: invalid target`
+  that mentions neither this package nor which argument was wrong. Objects,
+  functions and symbols remain trackable.
+
+### Added
+
+- **`test/adversarial.test.js`** -- 32 tests. Every defect above, plus the
+  invariants that held under attack and must not regress: the timer registry
+  reaps 5000 fired timers back to zero, the audited set reaps a 5000-handle
+  batch on untrack, 200 install/uninstall cycles accumulate no claims, a
+  thrown `audit()` does not suppress later kernels, a non-array or null
+  `audit()` return cannot corrupt the result, a failed `install()` rolls its
+  claims back, and unregistering a kernel from inside its own `audit()` does not
+  corrupt the walk.
+
+Nothing in the 316 existing tests changed behaviour, which is the part worth
+trusting: no working code depended on any of the loose input handling. Two test
+stubs were updated to declare an `install()` alongside their `patchSurfaces`,
+because that combination is now correctly rejected.
+
 ## [1.2.0] - 2026-07-19
 
 **Three resource kernels.** Worker, WebAudio and socket lifecycles -- the three
