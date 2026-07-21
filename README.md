@@ -13,7 +13,7 @@
 
 `lite-leak` wraps [`@zakkster/lite-cleanup`](https://github.com/PeshoVurtoleta/lite-cleanup) with owner-tree attribution from [`@zakkster/lite-signal`](https://github.com/PeshoVurtoleta/lite-signal) 1.5.0+. Track a target for GC observation; if it survives past its owner's cleanup, you get a structured leak report with the owner path snapshot at track-time.
 
-**Status:** v1.3.0 -- **stable**. Eleven detection kernels shipped (raf-orphan in 1.1.0; worker-orphan, audio-node and socket-orphan in 1.2.0; gl-resource-orphan in 1.3.0). Full M2 audit API (`auditByKind`, `auditByOwner`, `remediate`). Four ecosystem sinks (`createTraceSink`, `createGenericSink`, `createProfilerSignalSink`, `createStudioSink`). Peer matrix validating owner-frame assumptions against the lite-signal 1.8.0 base and the rebuilt 1.9-1.12 line. Retained-heap budget suite. WHY-1.0.md and REJECTED.md ship in-tree. The `lite-leakforge` demo/toolkit product builds on top as a separate package.
+**Status:** v1.4.0 -- **stable**. Eleven detection kernels shipped (raf-orphan in 1.1.0; worker-orphan, audio-node and socket-orphan in 1.2.0; gl-resource-orphan in 1.3.0). Full M2 audit API (`auditByKind`, `auditByOwner`, `remediate`). Four ecosystem sinks (`createTraceSink`, `createGenericSink`, `createProfilerSignalSink`, `createStudioSink`). Peer matrix validating owner-frame assumptions against the lite-signal 1.8.0 base and the rebuilt 1.9-1.12 line. Retained-heap budget suite. WHY-1.0.md and REJECTED.md ship in-tree. The `lite-leakforge` demo/toolkit product builds on top as a separate package.
 
 - Single-file ESM, no bundled deps, ASCII-only source
 - Auto-untrack via `lite-signal`'s `onCleanup`: any FR-fired collection is *by definition* a target that outlived its owner
@@ -697,6 +697,25 @@ sink.unmount();
 
 Ghost-safe: no signals, imperative DOM updates only. Options: `mount: false` skips auto-mount at construction (call `sink.mount()` later). `zIndex` overrides the default (2147482999, one below lite-studio's own).
 
+
+## Cookbook
+
+Task-oriented recipes live in [COOKBOOK.md](./COOKBOOK.md) -- nineteen of them across four tiers: getting a first signal, per-kernel recipes, gating in CI, and production/routing/extension. Start there if you know what you want to do and not which API does it.
+
+The quickest possible start:
+
+```js
+import { createLeakTracker, createDefaultKernels } from '@zakkster/lite-leak';
+
+const tracker = createLeakTracker({ name: 'app', onFinding: console.error });
+const { kernels, skipped } = createDefaultKernels();
+for (const k of kernels) tracker.registerKernel(k);
+if (skipped.length) console.info('[leak] not watching:', skipped);
+```
+
+`createDefaultKernels()` composes the set for your runtime: it cedes `requestAnimationFrame` to `raf-orphan` (registering `timer-orphan` and `raf-orphan` by hand throws `KernelConflictError`, and resolving that the obvious way keeps the weaker rAF detector), and it omits kernels whose globals are absent instead of letting them register and silently watch nothing. **`skipped` is the honest half** -- a kernel listed there is one whose leaks nothing will report.
+
+`detached-dom` and `gl-resource-orphan` are never included; both need configuration that cannot be guessed.
 
 ## Roadmap
 

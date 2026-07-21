@@ -3,6 +3,55 @@
 All notable changes to `@zakkster/lite-leak` will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-07-21
+
+**COOKBOOK.md**, and the preset that writing it made necessary.
+
+### Added -- `COOKBOOK.md`
+
+Nineteen recipes in four tiers: get a signal, per-kernel recipes, gate it in CI,
+and production/routing/extension. Task-oriented throughout -- the README says
+what the package is, the cookbook says what to do with it.
+
+- **`test/cookbook.test.js`** -- 12 tests, one per load-bearing recipe. A
+  cookbook whose recipes no longer run is worse than no cookbook, because the
+  reader trusts it. Recipe 5's documented `KernelConflictError` is asserted to
+  *still throw*, so the trap cannot quietly disappear from under the text.
+
+### Added -- `createDefaultKernels(options?)`
+
+Writing Tier 1 surfaced two traps in assembling the kernel set by hand, both of
+which produce a detector that looks installed and is not:
+
+- **`timer-orphan` claims `requestAnimationFrame` by default**, so registering
+  `raf-orphan` afterwards throws `KernelConflictError`. Resolving that the
+  obvious way -- dropping raf-orphan -- keeps the *weaker* rAF detector, the one
+  that models a render loop as a fire-once timer. The preset always cedes the
+  surface via `handleRaf: false`.
+- **A kernel whose globals are absent still registers.** In Node, with no
+  `MutationObserver` and no `Worker`, `observer-orphan` and `worker-orphan`
+  install, claim their surfaces, patch nothing and report clean forever, and
+  nothing in the API distinguishes that from a genuinely quiet run.
+
+So the preset returns `{ kernels, skipped }`, where `skipped` carries a reason
+per omission and is meant to be logged or asserted on. A kernel that is not in
+`kernels` is one whose leaks nothing will report; that should be visible rather
+than inferred.
+
+`detached-dom` and `gl-resource-orphan` are deliberately never included -- both
+need configuration that cannot be guessed, and a wrong guess would watch the
+wrong subtree or the wrong context and report clean forever.
+
+Options are validated fail-closed like every other 1.2.1 boundary
+(`{ targt }` throws with a did-you-mean).
+
+- **`test/presets.test.js`** -- 9 tests, including one that pins the hand-rolled
+  timer+raf collision and the preset's resolution of it side by side.
+
+### Changed
+
+- `Presets.js` and `COOKBOOK.md` added to `files[]`.
+
 ## [1.3.0] - 2026-07-21
 
 **GPU resources.** The `gl-resource-orphan` kernel: WebGL buffers, textures,

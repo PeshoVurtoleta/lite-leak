@@ -1,6 +1,6 @@
 {
   "name": "@zakkster/lite-leak",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Zero-GC leak diagnostic for the @zakkster/lite-* ecosystem. Owner-tree attribution via lite-signal; pluggable kernels for classifying leaks.",
   "type": "module",
   "main": "./Leak.js",
@@ -22,7 +22,9 @@
     "CHANGELOG.md",
     "llms.txt",
     "LICENSE",
-    "README.md"
+    "README.md",
+    "Presets.js",
+    "COOKBOOK.md"
   ],
   "sideEffects": false,
   "scripts": {

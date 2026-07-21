@@ -1,4 +1,4 @@
-@zakkster/lite-leak v1.3.0
+@zakkster/lite-leak v1.4.0
 
 Zero-GC leak diagnostic for the @zakkster/lite-* ecosystem.
 Wraps lite-cleanup's FR primitive with owner-tree attribution and
@@ -221,6 +221,26 @@ createSocketOrphanKernel({ target?, warnOnNoOwner?, captureStacks?, priority? })
 All three hold their live registries as WeakRef behind a WeakMap, so the kernel
 never pins the resource it watches and a dropped resource still reaches the FR
 path for refine().
+
+PRESET (1.4.0)
+--------------
+createDefaultKernels({ target?, warnOnNoOwner?, captureStacks?, exclude? })
+  -> { kernels: Kernel[], skipped: Array<{name, reason}> }
+  Composes the kernel set for the runtime. Two traps it encodes:
+   1. timer-orphan claims requestAnimationFrame by default, so registering
+      raf-orphan after it throws KernelConflictError. The preset always passes
+      handleRaf:false so raf-orphan (the loop-aware detector) takes the surface.
+      Resolving the conflict the other way silently keeps the weaker detector.
+   2. A kernel whose globals are absent still registers, claims surfaces, patches
+      nothing and reports clean forever. The preset checks availability first and
+      returns omissions in `skipped` WITH A REASON. skipped is meant to be logged
+      or asserted on, not discarded.
+  NEVER includes detached-dom (needs a root) or gl-resource-orphan (needs a
+  specific context). Register those explicitly.
+  Options are validated fail-closed; unknown keys throw with did-you-mean.
+
+COOKBOOK.md ships in the package: 19 recipes, 4 tiers, pinned by
+test/cookbook.test.js so recipes cannot rot.
 
 KERNEL SHIPPED IN 1.3.0
 -----------------------

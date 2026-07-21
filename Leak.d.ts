@@ -649,3 +649,43 @@ export interface StudioSink extends Sink {
 }
 
 export function createStudioSink(options?: StudioSinkOptions): StudioSink;
+
+// -----------------------------------------------------------------
+// Presets (1.4.0)
+// -----------------------------------------------------------------
+
+export interface DefaultKernelsOptions {
+  /** Object the kernels patch. Default globalThis. */
+  target?: object;
+  /** Forwarded to every kernel that accepts it. */
+  warnOnNoOwner?: boolean;
+  /** Forwarded to every kernel that accepts it. Costs an Error per resource. */
+  captureStacks?: boolean;
+  /** Kernel names to leave out; they appear in `skipped`. */
+  exclude?: readonly string[];
+}
+
+export interface SkippedKernel {
+  readonly name: string;
+  /** Why it is not watching -- an absent global, or caller exclusion. */
+  readonly reason: string;
+}
+
+export interface DefaultKernelsResult {
+  /** Composed in registration order; free of patch-surface conflicts. */
+  readonly kernels: Kernel[];
+  /**
+   * The honest half. A kernel listed here is one whose leaks nothing will
+   * report -- log it or assert on it rather than discarding it.
+   */
+  readonly skipped: SkippedKernel[];
+}
+
+/**
+ * Build the kernel set appropriate to a runtime, ceding `requestAnimationFrame`
+ * to `raf-orphan` and omitting kernels whose globals are absent.
+ *
+ * `detached-dom` and `gl-resource-orphan` are never included: both need
+ * configuration that cannot be guessed.
+ */
+export function createDefaultKernels(options?: DefaultKernelsOptions): DefaultKernelsResult;
