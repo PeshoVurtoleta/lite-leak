@@ -3,6 +3,70 @@
 All notable changes to `@zakkster/lite-leak` will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-07-21
+
+**GPU resources.** The `gl-resource-orphan` kernel: WebGL buffers, textures,
+framebuffers, renderbuffers, shaders, programs, vertex arrays, samplers and
+queries that outlive their owner without being deleted.
+
+This is the purest case of the rule the package exists for. A `WebGLBuffer` is a
+small JS wrapper around memory owned by the driver, so dropping the last JS
+reference frees the wrapper and nothing else -- the VRAM stays allocated until
+`deleteBuffer()` or context loss. A heap snapshot is not merely unhelpful here,
+it is actively misleading: the JS side can look perfectly clean while a texture
+atlas leaks megabytes of device memory per scene reload, presenting as a GPU
+slowdown or an out-of-memory context loss with nothing in the heap profile to
+explain it.
+
+### Added -- `createGlResourceOrphanKernel({ gl, label?, ... })` (11th kernel)
+
+- Patches the **factory methods on a specific context object**, not a global
+  constructor. `gl` is required and validated: an application may hold several
+  contexts (main scene, picking pass, offscreen thumbnailer), and guessing one
+  would instrument the wrong context and report clean forever.
+- `create*()` registers the returned resource; `delete*(resource)` reaps it;
+  owner disposal deletes it. Only the kinds a context actually exposes are
+  patched, so a WebGL1 context does not get WebGL2 surfaces.
+- A factory returning `null` -- a failed GPU allocation -- is not tracked. It is
+  not a leak, and tracking it would report one on every out-of-memory path.
+- **`audit()` returns nothing once `gl.isContextLost()` is true.** A lost
+  context has already destroyed everything it owned, so reporting those
+  resources would be reporting a leak the driver already collected. Same
+  reasoning as socket-orphan skipping a peer-closed socket. Owner disposal
+  against a lost context is a documented no-op rather than a throw.
+- Reasons: `no-owner-create` (warning), `no-owner-resource-live`,
+  `owner-disposed-resource-live`. Findings carry `resourceKind`
+  (`buffer` | `texture` | `framebuffer` | `renderbuffer` | `shader` |
+  `program` | `vertexArray` | `sampler` | `query`).
+- In-house consumer: `@zakkster/lite-gl` v1.3.0.
+
+### Changed -- multi-context namespacing
+
+- The kernel's **name and patch surfaces are namespaced by `label`**
+  (auto-unique when omitted). `registerKernel` enforces unique kernel names and
+  unique patch-surface strings per tracker, so two kernels over two *different*
+  contexts would otherwise be rejected as a conflict that does not exist.
+  `finding.kind` stays `'gl-resource-orphan'` regardless of label, so
+  `auditByKind()` and `remediate()` are unaffected.
+- A genuine double-install on the *same* context is still detected, because that
+  check is target-scoped (`_claimPatchSurface`, keyed by the context object)
+  rather than by surface name. The two guards are deliberately at different
+  granularities: names catch configuration mistakes, targets catch real
+  contention.
+
+### Added -- tests
+
+- **`test/kernel-gl-resource-orphan.test.js`** -- 22 tests, including a
+  300-iteration scene-reload loop asserting 900 creates paired with 900 deletes
+  and a kernel live-count back at zero. That loop is the shape of the real bug:
+  if the reap path missed, the count grows by one pass per reload while the JS
+  heap looks perfectly clean.
+- `makeGlHost()` added to `test/_helpers/resources.js`, with `_lose()` to drive
+  the context-loss path.
+
+Ships with `createGlResourceOrphanSpecimen()` in `@zakkster/lite-leakforge`
+1.3.0; `leakforge --specimens` now runs 11/11.
+
 ## [1.2.1] - 2026-07-21
 
 **Fail-closed on input.** A day spent attacking the engine's boundaries instead

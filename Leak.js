@@ -12,7 +12,7 @@
 import { createDisposalRegistry } from '@zakkster/lite-cleanup';
 import { getOwner, ownerOf, onCleanup, nodeId, describe } from '@zakkster/lite-signal';
 
-export const VERSION = '1.2.1';
+export const VERSION = '1.3.0';
 
 const EMPTY_OPTIONS = Object.freeze(Object.create(null));
 
@@ -749,6 +749,7 @@ export { createRafOrphanKernel } from './kernels/RafOrphan.js';
 export { createWorkerOrphanKernel } from './kernels/WorkerOrphan.js';
 export { createAudioNodeKernel } from './kernels/AudioNode.js';
 export { createSocketOrphanKernel } from './kernels/SocketOrphan.js';
+export { createGlResourceOrphanKernel } from './kernels/GlResourceOrphan.js';
 
 // -----------------------------------------------------------------
 // Ecosystem sink re-exports (M2.5)

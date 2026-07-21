@@ -1,4 +1,4 @@
-@zakkster/lite-leak v1.2.1
+@zakkster/lite-leak v1.3.0
 
 Zero-GC leak diagnostic for the @zakkster/lite-* ecosystem.
 Wraps lite-cleanup's FR primitive with owner-tree attribution and
@@ -221,6 +221,28 @@ createSocketOrphanKernel({ target?, warnOnNoOwner?, captureStacks?, priority? })
 All three hold their live registries as WeakRef behind a WeakMap, so the kernel
 never pins the resource it watches and a dropped resource still reaches the FR
 path for refine().
+
+KERNEL SHIPPED IN 1.3.0
+-----------------------
+createGlResourceOrphanKernel({ gl, label?, warnOnNoOwner?, captureStacks?,
+                               priority? })
+  gl is REQUIRED (no global default; an app may hold several contexts).
+  Patches create*/delete* pairs on that context object for: buffer, texture,
+  framebuffer, renderbuffer, shader, program, vertexArray, sampler, query.
+  Only kinds the context exposes are patched.
+  A factory returning null (failed GPU allocation) is NOT tracked.
+  warning: no-owner-create
+  findings: no-owner-resource-live, owner-disposed-resource-live
+  Findings carry resourceKind.
+  audit() returns [] when gl.isContextLost() -- the driver already reclaimed
+  everything, so it is not a leak. Owner disposal against a lost context is a
+  no-op, not a throw.
+  MULTI-CONTEXT: kernel.name and patchSurfaces are namespaced by `label`
+  (auto-unique if omitted) because registerKernel enforces unique names and
+  surfaces per tracker. finding.kind stays 'gl-resource-orphan' so
+  auditByKind/remediate are unaffected. Same-context double install is still
+  detected via the target-scoped claim.
+  In-house consumer: @zakkster/lite-gl v1.3.0.
 
 FAIL-CLOSED INPUT VALIDATION (1.2.1)
 ------------------------------------

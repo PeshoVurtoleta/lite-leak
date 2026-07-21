@@ -90,3 +90,36 @@ export function makeSocketHost() {
   host._log = log;
   return host;
 }
+
+/**
+ * WebGL context host. Every factory returns a distinct object and every delete
+ * records it, so a test can assert the create/delete pairing without a GPU.
+ * `_lose()` flips `isContextLost()`, which the kernel treats as "the driver
+ * already reclaimed everything".
+ */
+export function makeGlHost() {
+  const log = { created: 0, deleted: 0, byKind: Object.create(null) };
+  let lost = false;
+
+  const mk = (kind) => function () {
+    log.created++;
+    log.byKind[kind] = (log.byKind[kind] || 0) + 1;
+    return { __glKind: kind, deleted: false };
+  };
+  const del = (kind) => function (resource) {
+    log.deleted++;
+    if (resource !== null && typeof resource === 'object') resource.deleted = true;
+  };
+
+  const gl = {
+    isContextLost() { return lost; },
+    _lose() { lost = true; },
+    _log: log,
+  };
+  for (const kind of ['Buffer', 'Texture', 'Framebuffer', 'Renderbuffer',
+    'Shader', 'Program', 'VertexArray']) {
+    gl['create' + kind] = mk(kind.toLowerCase());
+    gl['delete' + kind] = del(kind.toLowerCase());
+  }
+  return gl;
+}

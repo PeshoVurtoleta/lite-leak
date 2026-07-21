@@ -238,7 +238,8 @@ export interface TimerOrphanKernelOptions {
 export interface PatchLifecycleFinding<T = unknown> extends KernelFinding<T> {
   readonly kind:
     | 'timer-orphan' | 'listener-orphan' | 'async-retention'
-    | 'worker-orphan' | 'audio-node' | 'socket-orphan';
+    | 'worker-orphan' | 'audio-node' | 'socket-orphan'
+    | 'gl-resource-orphan';
   readonly reason: 'patch-double-install' | 'patch-layered';
   readonly surfaces: readonly string[];
   readonly detail: string;
@@ -515,6 +516,49 @@ export interface SocketOrphanRefinedReport<T = unknown> extends LeakReport<T> {
 }
 
 export function createSocketOrphanKernel(options?: SocketOrphanKernelOptions): Kernel;
+
+// -----------------------------------------------------------------
+// Kernel: gl-resource-orphan (1.3.0)
+// -----------------------------------------------------------------
+
+export type GlResourceKind =
+  | 'buffer' | 'texture' | 'framebuffer' | 'renderbuffer'
+  | 'shader' | 'program' | 'vertexArray' | 'sampler' | 'query';
+
+export interface GlResourceOrphanKernelOptions {
+  /**
+   * The WebGL context to instrument. Required: an application may hold several
+   * contexts, and there is no safe global default.
+   */
+  gl: object;
+  /**
+   * Namespace for this kernel's name and patch surfaces so several contexts can
+   * be instrumented on one tracker. Auto-generated when omitted. The reported
+   * `finding.kind` is always 'gl-resource-orphan' regardless of label.
+   */
+  label?: string;
+  warnOnNoOwner?: boolean;
+  captureStacks?: boolean;
+  priority?: number;
+}
+
+export interface GlResourceOrphanFinding<T = unknown> extends KernelFinding<T> {
+  readonly kind: 'gl-resource-orphan';
+  readonly reason:
+    | 'no-owner-create'
+    | 'no-owner-resource-live'
+    | 'owner-disposed-resource-live';
+  readonly resourceKind: GlResourceKind;
+  readonly origin: string | null;
+}
+
+export interface GlResourceOrphanRefinedReport<T = unknown> extends LeakReport<T> {
+  readonly kind: 'gl-resource-orphan';
+  readonly resourceKind: GlResourceKind;
+  readonly wasDeleted: boolean;
+}
+
+export function createGlResourceOrphanKernel(options: GlResourceOrphanKernelOptions): Kernel;
 
 // -----------------------------------------------------------------
 // M2: audit API extensions -- see LeakTracker interface above.

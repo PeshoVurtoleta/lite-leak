@@ -13,7 +13,7 @@
 
 `lite-leak` wraps [`@zakkster/lite-cleanup`](https://github.com/PeshoVurtoleta/lite-cleanup) with owner-tree attribution from [`@zakkster/lite-signal`](https://github.com/PeshoVurtoleta/lite-signal) 1.5.0+. Track a target for GC observation; if it survives past its owner's cleanup, you get a structured leak report with the owner path snapshot at track-time.
 
-**Status:** v1.2.1 -- **stable**. Ten detection kernels shipped (raf-orphan in 1.1.0; worker-orphan, audio-node and socket-orphan in 1.2.0). Full M2 audit API (`auditByKind`, `auditByOwner`, `remediate`). Four ecosystem sinks (`createTraceSink`, `createGenericSink`, `createProfilerSignalSink`, `createStudioSink`). Peer matrix validating owner-frame assumptions against the lite-signal 1.8.0 base and the rebuilt 1.9-1.12 line. Retained-heap budget suite. WHY-1.0.md and REJECTED.md ship in-tree. The `lite-leakforge` demo/toolkit product builds on top as a separate package.
+**Status:** v1.3.0 -- **stable**. Eleven detection kernels shipped (raf-orphan in 1.1.0; worker-orphan, audio-node and socket-orphan in 1.2.0; gl-resource-orphan in 1.3.0). Full M2 audit API (`auditByKind`, `auditByOwner`, `remediate`). Four ecosystem sinks (`createTraceSink`, `createGenericSink`, `createProfilerSignalSink`, `createStudioSink`). Peer matrix validating owner-frame assumptions against the lite-signal 1.8.0 base and the rebuilt 1.9-1.12 line. Retained-heap budget suite. WHY-1.0.md and REJECTED.md ship in-tree. The `lite-leakforge` demo/toolkit product builds on top as a separate package.
 
 - Single-file ESM, no bundled deps, ASCII-only source
 - Auto-untrack via `lite-signal`'s `onCleanup`: any FR-fired collection is *by definition* a target that outlived its owner
@@ -492,6 +492,37 @@ assert.deepEqual(tracker.audit(), []);   // anything left is a real graph leak
 Patches `WebSocket` and `EventSource`. An open socket is held by the network stack, not by your JavaScript: dropping the reference leaves the connection open, the server-side session live, and an `EventSource` reconnecting on a timer forever. This is the leak that presents as "the app gets slower the longer you navigate" rather than as a heap graph anyone can read.
 
 `audit()` reports by `readyState` rather than by bookkeeping -- a connection the peer already closed is not a leak, so only `CONNECTING` or `OPEN` counts. Reasons: `no-owner-open` (warning), `no-owner-socket-open`, `owner-disposed-socket-open`. In-house consumer: `@zakkster/lite-ws`.
+
+### `createGlResourceOrphanKernel({ gl, label?, warnOnNoOwner?, captureStacks?, priority? })` (shipped in 1.3.0)
+
+Patches the resource factories on a WebGL context: `createBuffer`/`deleteBuffer`, textures, framebuffers, renderbuffers, shaders, programs, vertex arrays, samplers and queries. Only the kinds a given context exposes are patched.
+
+A `WebGLBuffer` is a small JS wrapper around memory owned by the driver. Dropping the JS reference frees the wrapper and nothing else -- the allocation survives until `delete*()` or context loss. This is the one leak class where a clean heap snapshot is actively misleading, because the leaked bytes were never on the JS heap to begin with.
+
+`gl` is **required**. There is no global default: an application may hold several contexts, and instrumenting the wrong one would report clean forever.
+
+```js
+const kernel = createGlResourceOrphanKernel({ gl, label: 'main' });
+tracker.registerKernel(kernel);
+
+effect(() => {
+  const buf = gl.createBuffer();   // deleted automatically on disposal
+});
+
+const stray = gl.createTexture();  // -> onWarning: no-owner-create
+```
+
+| Reason | Channel | Meaning |
+|---|---|---|
+| `no-owner-create` | warning | resource allocated outside any owner |
+| `no-owner-resource-live` | finding | still allocated, nothing will delete it |
+| `owner-disposed-resource-live` | finding | owner gone, device memory still held |
+
+Findings carry `resourceKind` so a texture leak is distinguishable from a buffer leak.
+
+**Context loss.** `audit()` returns nothing once `gl.isContextLost()` is true -- a lost context already destroyed everything it owned, so reporting those resources would be reporting a leak the driver already collected. Owner disposal against a lost context is a no-op, not a throw.
+
+**Several contexts at once.** The kernel's name and patch surfaces are namespaced by `label` (auto-unique when omitted), because `registerKernel` enforces unique names and surfaces per tracker and would otherwise reject a second context as a conflict that does not exist. `finding.kind` is always `'gl-resource-orphan'`, so `auditByKind()` and `remediate()` are unaffected. A real double-install on the *same* context is still caught, because that check is keyed by the context object rather than by surface name.
 
 ## Fail-closed on input (1.2.1)
 
