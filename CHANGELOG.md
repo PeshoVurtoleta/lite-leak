@@ -3,6 +3,52 @@
 All notable changes to `@zakkster/lite-leak` will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-07-21
+
+**Aggregation.** Four hundred listeners leaked from one component used to
+produce four hundred findings, and a report nobody reads is a report that does
+not gate anything.
+
+### Added
+
+- **`groupFindings(findings, options?)`** -- collapse findings into clusters
+  keyed by `(kind, reason, origin)`, returning `{ key, kind, reason, origin,
+  count, representative }` per cluster. Pure and tracker-independent: it accepts
+  findings from `audit()`, from an `onFinding` handler, or from a previous run's
+  JSON artifact, which is what lets `lite-leakforge` cluster evidence it
+  collected through the gate rather than through an audit.
+- **`tracker.auditGrouped(options?)`** -- sugar for
+  `groupFindings(audit(), options)`.
+- `byOrigin` (default true) splits clusters by call site. Origins exist only
+  when a kernel ran with `captureStacks`, so with stacks off this changes
+  nothing; `byOrigin: false` collapses every call site of one `(kind, reason)`.
+
+### Deliberately not added: a severity score
+
+The roadmap called for severity ordering. Writing it made clear that it cannot
+be done honestly. Ranking `owner-disposed-*` against `no-owner-*` means
+asserting that a broken cleanup cascade is worse than a resource that never had
+an owner, or the reverse, and neither holds in general -- it depends entirely on
+the application. A number invented to sort by would be exactly the sort of
+unfalsifiable claim this package exists to avoid.
+
+Groups are ordered by `count` descending, which is a frequency signal and is
+documented as nothing more, with the cluster key as a deterministic tiebreak so
+CI diffs are stable between runs. Cluster keys are stable across runs of the
+same build: `kind:reason`, or `kind:reason:originHash` (FNV-1a, base36).
+
+### Notes
+
+- `groupFindings` never throws on kernel output. Malformed entries are skipped
+  and missing `kind`/`reason` fall back to `'unknown'` -- a reporting helper
+  that crashes on a bad finding turns a leak report into no report at all.
+- Input is validated fail-closed like every other 1.2.1 boundary
+  (`{ byOrigins: true }` throws with a did-you-mean).
+- **`test/grouping.test.js`** -- 20 tests, including determinism across repeated
+  runs and tie-breaking that does not depend on input order.
+
+Pairs with `lite-leakforge` 1.4.0's `--group`.
+
 ## [1.4.0] - 2026-07-21
 
 **COOKBOOK.md**, and the preset that writing it made necessary.

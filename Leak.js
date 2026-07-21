@@ -12,7 +12,7 @@
 import { createDisposalRegistry } from '@zakkster/lite-cleanup';
 import { getOwner, ownerOf, onCleanup, nodeId, describe } from '@zakkster/lite-signal';
 
-export const VERSION = '1.4.0';
+export const VERSION = '1.5.0';
 
 const EMPTY_OPTIONS = Object.freeze(Object.create(null));
 
@@ -228,6 +228,97 @@ function assertKnownOptions(options, allowed, label) {
       ' Known options: ' + allowed.join(', ') + '.'
     );
   }
+}
+
+const GROUP_OPTION_KEYS = ['byOrigin'];
+
+/**
+ * FNV-1a, base36. Used only to shorten an origin stack into a stable cluster
+ * key. Not a security hash -- a collision merges two clusters that were going
+ * to be adjacent in the report anyway.
+ * @private
+ */
+function hashOrigin(str) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(36);
+}
+
+/**
+ * Collapse a findings array into clusters.
+ *
+ * Four hundred listeners leaked from one component produce four hundred
+ * findings, and a report that prints all of them is a report nobody reads. This
+ * groups by `(kind, reason, origin)` and returns one entry per cluster with a
+ * count and the first occurrence as representative.
+ *
+ * **There is deliberately no severity score.** Ranking `owner-disposed-*`
+ * against `no-owner-*` would mean asserting that a broken cleanup cascade is
+ * worse than a resource that never had an owner, or the reverse, and neither is
+ * true in general -- it depends entirely on the application. Inventing a number
+ * to sort by would be exactly the kind of unfalsifiable claim this package
+ * exists to avoid. Groups are ordered by `count` descending, which is a
+ * frequency signal and is described as nothing more, with the cluster key as a
+ * deterministic tiebreak so CI diffs are stable between runs.
+ *
+ * Pure and tracker-independent: pass findings from `audit()`, or the ones your
+ * `onFinding` handler collected, or a JSON artifact from a previous run.
+ *
+ * @param {Array<object>} findings
+ * @param {object} [options]
+ * @param {boolean} [options.byOrigin=true]
+ *   Split clusters by `origin`. Origins are only present when a kernel ran with
+ *   `captureStacks`, so with stacks off this changes nothing. Set false to
+ *   collapse every call site of one `(kind, reason)` into a single group.
+ * @returns {Array<{key: string, kind: string, reason: string, origin: string|null,
+ *   count: number, representative: object}>}
+ */
+export function groupFindings(findings, options) {
+  if (!Array.isArray(findings)) {
+    throw new TypeError('groupFindings: findings must be an array, got ' + typeof findings);
+  }
+  assertKnownOptions(options, GROUP_OPTION_KEYS, 'groupFindings');
+  const opts = options || EMPTY_OPTIONS;
+  const byOrigin = opts.byOrigin !== false;
+
+  const groups = new Map();
+  for (let i = 0; i < findings.length; i++) {
+    const f = findings[i];
+    // A kernel can emit anything; a reporting helper must not throw on it.
+    if (f === null || typeof f !== 'object') continue;
+    const kind = typeof f.kind === 'string' ? f.kind : 'unknown';
+    const reason = typeof f.reason === 'string' ? f.reason : 'unknown';
+    const origin = (byOrigin && typeof f.origin === 'string' && f.origin.length > 0)
+      ? f.origin : null;
+    const key = origin === null
+      ? kind + ':' + reason
+      : kind + ':' + reason + ':' + hashOrigin(origin);
+
+    const existing = groups.get(key);
+    if (existing === undefined) {
+      groups.set(key, {
+        key: key,
+        kind: kind,
+        reason: reason,
+        origin: origin,
+        count: 1,
+        representative: f,
+      });
+    } else {
+      existing.count++;
+    }
+  }
+
+  const out = [];
+  for (const g of groups.values()) out.push(g);
+  out.sort(function (a, b) {
+    if (b.count !== a.count) return b.count - a.count;
+    return a.key < b.key ? -1 : (a.key > b.key ? 1 : 0);
+  });
+  return out;
 }
 
 function snapshotOwnerPath(ownerHandle) {
@@ -653,6 +744,15 @@ export function createLeakTracker(options) {
   }
 
   /**
+   * Run audit() and collapse the result into clusters. Sugar over
+   * groupFindings(audit(), options) -- see that function for why there is no
+   * severity score.
+   */
+  function auditGrouped(options) {
+    return groupFindings(audit(), options);
+  }
+
+  /**
    * M2: filter audit findings whose ownerPath contains the given owner
    * handle (matching by node id).
    */
@@ -704,6 +804,7 @@ export function createLeakTracker(options) {
     audit: audit,
     auditByKind: auditByKind,
     auditByOwner: auditByOwner,
+    auditGrouped: auditGrouped,
     remediate: remediate,
   };
 }

@@ -1,4 +1,4 @@
-@zakkster/lite-leak v1.4.0
+@zakkster/lite-leak v1.5.0
 
 Zero-GC leak diagnostic for the @zakkster/lite-* ecosystem.
 Wraps lite-cleanup's FR primitive with owner-tree attribution and
@@ -221,6 +221,21 @@ createSocketOrphanKernel({ target?, warnOnNoOwner?, captureStacks?, priority? })
 All three hold their live registries as WeakRef behind a WeakMap, so the kernel
 never pins the resource it watches and a dropped resource still reaches the FR
 path for refine().
+
+AGGREGATION (1.5.0)
+-------------------
+groupFindings(findings, { byOrigin? }) -> FindingGroup[]
+tracker.auditGrouped({ byOrigin? })    -> FindingGroup[]
+  FindingGroup = { key, kind, reason, origin, count, representative }
+  key = 'kind:reason' or 'kind:reason:originHash' (FNV-1a base36), stable
+  across runs of the same build.
+  byOrigin default true; origins exist only with captureStacks.
+  Ordered by count DESC, then key ASC (deterministic CI diffs).
+  NO SEVERITY FIELD -- ranking owner-disposed-* against no-owner-* would be an
+  unfalsifiable claim. count is a frequency signal and nothing more.
+  Pure and tracker-independent: accepts audit() output, onFinding-collected
+  findings, or a prior JSON artifact. Never throws on malformed findings
+  (skipped; missing kind/reason -> 'unknown').
 
 PRESET (1.4.0)
 --------------

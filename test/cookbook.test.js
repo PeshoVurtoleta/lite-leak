@@ -11,7 +11,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   createLeakTracker, createDefaultKernels, createTimerOrphanKernel,
-  createRafOrphanKernel, createGenericSink, KernelConflictError,
+  createRafOrphanKernel, createGenericSink, KernelConflictError, groupFindings,
 } from '../Leak.js';
 
 /** Target exposing timers plus rAF, enough for the composition recipes. */
@@ -164,4 +164,28 @@ test('reading a finding: kind, reason and origin are present as documented', () 
   assert.ok('origin' in f, 'origin is documented as present (null unless captureStacks)');
   assert.notEqual(f.origin, null, 'captureStacks:true must populate origin');
   for (const k of kernels) tracker.unregisterKernel(k);
+});
+
+test('recipe 2b: auditGrouped collapses a wall of findings', () => {
+  let seq = 0;
+  const target = {
+    setTimeout: function () { return ++seq; }, clearTimeout: function () {},
+  };
+  const tracker = createLeakTracker();
+  tracker.registerKernel(createTimerOrphanKernel({ target, warnOnNoOwner: false }));
+
+  for (let i = 0; i < 120; i++) target.setTimeout(function () {}, 1000);
+
+  const groups = tracker.auditGrouped();
+  assert.equal(groups.length, 1, '120 findings collapse to one cluster');
+  assert.equal(groups[0].count, 120);
+  assert.equal(typeof tracker.remediate(groups[0].representative), 'string',
+    'the representative must be a real finding remediate() understands');
+});
+
+test('recipe 2b: groupFindings is usable without a tracker', () => {
+  const groups = groupFindings([
+    { kind: 'k', reason: 'r' }, { kind: 'k', reason: 'r' },
+  ]);
+  assert.equal(groups[0].count, 2);
 });

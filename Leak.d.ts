@@ -135,6 +135,8 @@ export interface LeakTracker<T = unknown> {
   auditByKind(kind: string): KernelFinding[];
   /** M2: filter audit findings whose ownerPath contains the owner's id. */
   auditByOwner(ownerHandle: unknown): KernelFinding[];
+  /** Run audit() and collapse the result into clusters. See groupFindings. */
+  auditGrouped(options?: GroupFindingsOptions): FindingGroup[];
   /** M2: kernel-provided remediation advisory for a finding. */
   remediate(finding: KernelFinding): string;
 }
@@ -567,6 +569,7 @@ export function createGlResourceOrphanKernel(options: GlResourceOrphanKernelOpti
 //
 //   tracker.auditByKind(kind: string): KernelFinding[]
 //   tracker.auditByOwner(ownerHandle: unknown): KernelFinding[]
+//   tracker.auditGrouped(options?): FindingGroup[]
 //   tracker.remediate(finding: KernelFinding): string
 //
 // The Kernel interface (also above) additionally supports an optional
@@ -689,3 +692,44 @@ export interface DefaultKernelsResult {
  * configuration that cannot be guessed.
  */
 export function createDefaultKernels(options?: DefaultKernelsOptions): DefaultKernelsResult;
+
+// -----------------------------------------------------------------
+// Aggregation (1.5.0)
+// -----------------------------------------------------------------
+
+export interface GroupFindingsOptions {
+  /**
+   * Split clusters by `origin`. Origins exist only when a kernel ran with
+   * `captureStacks`. Default true.
+   */
+  byOrigin?: boolean;
+}
+
+export interface FindingGroup<T = unknown> {
+  /** Stable cluster id: `kind:reason` or `kind:reason:originHash`. */
+  readonly key: string;
+  readonly kind: string;
+  readonly reason: string;
+  /** The shared call site, or null when the group spans several. */
+  readonly origin: string | null;
+  /** How many findings collapsed into this group. */
+  readonly count: number;
+  /** The first occurrence, kept verbatim. */
+  readonly representative: KernelFinding<T>;
+}
+
+/**
+ * Collapse findings into clusters, ordered by `count` descending with `key` as
+ * a deterministic tiebreak.
+ *
+ * There is deliberately no severity score: ranking a broken cleanup cascade
+ * against a never-owned resource would be an unfalsifiable claim. `count` is a
+ * frequency signal and nothing more.
+ *
+ * Pure and tracker-independent -- accepts findings from `audit()`, from an
+ * `onFinding` handler, or from a previous run's JSON artifact.
+ */
+export function groupFindings<T = unknown>(
+  findings: ReadonlyArray<KernelFinding<T>>,
+  options?: GroupFindingsOptions
+): FindingGroup<T>[];

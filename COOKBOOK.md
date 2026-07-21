@@ -56,6 +56,27 @@ if (findings.length) {
 `remediate(finding)` returns the owning kernel's written advice for that exact
 reason -- what to change, not just what broke.
 
+### 2b. Collapse a wall of findings
+
+`audit()` returns one finding per leaked resource. That is correct and unreadable
+once a single component leaks in a loop:
+
+```js
+const groups = tracker.auditGrouped();
+for (const g of groups) {
+  console.error(`${g.count}x ${g.kind}/${g.reason}`, tracker.remediate(g.representative));
+}
+```
+
+Turn `captureStacks` on and the clusters split by call site, which is the
+difference between "190 timer leaks" and "150 from panel.js:5, 40 from
+chart.js:8". `groupFindings(findings)` is the pure form when you already have
+findings from an `onFinding` handler or a JSON artifact.
+
+Groups are ordered by count. There is no severity score, and that is on purpose:
+see the README. Count is a frequency signal, not a ranking of how bad each one
+is.
+
 ### 3. Track something the kernels do not cover
 
 Kernels auto-instrument known resources. For anything else, register it
