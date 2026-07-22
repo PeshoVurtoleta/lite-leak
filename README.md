@@ -13,7 +13,7 @@
 
 `lite-leak` wraps [`@zakkster/lite-cleanup`](https://github.com/PeshoVurtoleta/lite-cleanup) with owner-tree attribution from [`@zakkster/lite-signal`](https://github.com/PeshoVurtoleta/lite-signal) 1.5.0+. Track a target for GC observation; if it survives past its owner's cleanup, you get a structured leak report with the owner path snapshot at track-time.
 
-**Status:** v1.5.0 -- **stable**. Eleven detection kernels shipped (raf-orphan in 1.1.0; worker-orphan, audio-node and socket-orphan in 1.2.0; gl-resource-orphan in 1.3.0). Full M2 audit API (`auditByKind`, `auditByOwner`, `remediate`). Four ecosystem sinks (`createTraceSink`, `createGenericSink`, `createProfilerSignalSink`, `createStudioSink`). Peer matrix validating owner-frame assumptions against the lite-signal 1.8.0 base and the rebuilt 1.9-1.12 line. Retained-heap budget suite. WHY-1.0.md and REJECTED.md ship in-tree. The `lite-leakforge` demo/toolkit product builds on top as a separate package.
+**Status:** v1.6.0 -- **stable**. Twelve detection kernels shipped (raf-orphan in 1.1.0; worker-orphan, audio-node and socket-orphan in 1.2.0; gl-resource-orphan in 1.3.0). Full M2 audit API (`auditByKind`, `auditByOwner`, `remediate`). Four ecosystem sinks (`createTraceSink`, `createGenericSink`, `createProfilerSignalSink`, `createStudioSink`). Peer matrix validating owner-frame assumptions against the lite-signal 1.8.0 base and the rebuilt 1.9-1.12 line. Retained-heap budget suite. WHY-1.0.md and REJECTED.md ship in-tree. The `lite-leakforge` demo/toolkit product builds on top as a separate package.
 
 - Single-file ESM, no bundled deps, ASCII-only source
 - Auto-untrack via `lite-signal`'s `onCleanup`: any FR-fired collection is *by definition* a target that outlived its owner
@@ -523,6 +523,23 @@ Findings carry `resourceKind` so a texture leak is distinguishable from a buffer
 **Context loss.** `audit()` returns nothing once `gl.isContextLost()` is true -- a lost context already destroyed everything it owned, so reporting those resources would be reporting a leak the driver already collected. Owner disposal against a lost context is a no-op, not a throw.
 
 **Several contexts at once.** The kernel's name and patch surfaces are namespaced by `label` (auto-unique when omitted), because `registerKernel` enforces unique names and surfaces per tracker and would otherwise reject a second context as a conflict that does not exist. `finding.kind` is always `'gl-resource-orphan'`, so `auditByKind()` and `remediate()` are unaffected. A real double-install on the *same* context is still caught, because that check is keyed by the context object rather than by surface name.
+
+## Growth detection (1.6.0)
+
+Every other kernel answers *was this released?*. Some leaks are never orphaned at all -- a route cache keyed by URL, a memo table, a subscriber list appended to on every mount. Nothing is leaked in the ownership sense and the process still dies.
+
+Growth is a difference between moments, so one `audit()` can never see it.
+
+```js
+const before = tracker.snapshot();
+runInteraction();
+const diff = diffSnapshots(before, tracker.snapshot());
+// { tracked, byKind: { 'timer-orphan': 0 }, unknown: ['listener-orphan'], measured: 1 }
+```
+
+`snapshot()` emits nothing. **`null` is not zero:** a kernel with no `count()` reports `null`, and any kind null on either side diffs to `null` and appears in `unknown`. A kernel registered *between* snapshots was not at zero beforehand -- it was unobserved, so it diffs to null rather than `+N`. A gate asserting "this added nothing" must check `unknown` too, or it is asserting over a subset it cannot see.
+
+For continuous monitoring, `createCollectionGrowthKernel({ collections: { cache } })` samples once per `audit()` into a sliding window and reports `monotonic-growth`. That finding is **evidence, not proof** -- warmup is monotonic too. Because the window slides, a plateau clears it automatically, which is what stops a warmed cache being permanently indicted.
 
 ## Aggregation (1.5.0)
 

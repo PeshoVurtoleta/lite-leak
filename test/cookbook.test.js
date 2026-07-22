@@ -12,6 +12,7 @@ import assert from 'node:assert/strict';
 import {
   createLeakTracker, createDefaultKernels, createTimerOrphanKernel,
   createRafOrphanKernel, createGenericSink, KernelConflictError, groupFindings,
+  diffSnapshots, createCollectionGrowthKernel,
 } from '../Leak.js';
 
 /** Target exposing timers plus rAF, enough for the composition recipes. */
@@ -188,4 +189,32 @@ test('recipe 2b: groupFindings is usable without a tracker', () => {
     { kind: 'k', reason: 'r' }, { kind: 'k', reason: 'r' },
   ]);
   assert.equal(groups[0].count, 2);
+});
+
+test('recipe 12b: two snapshots gate an interaction, and unknown is checked', () => {
+  let seq = 0;
+  const target = { setTimeout: () => ++seq, clearTimeout: () => {} };
+  const tracker = createLeakTracker();
+  tracker.registerKernel(createTimerOrphanKernel({ target, warnOnNoOwner: false }));
+
+  const before = tracker.snapshot();
+  const ids = [];
+  for (let i = 0; i < 50; i++) ids.push(target.setTimeout(function () {}, 1000));
+  for (const id of ids) target.clearTimeout(id);
+
+  const diff = diffSnapshots(before, tracker.snapshot());
+  assert.equal(diff.byKind['timer-orphan'], 0);
+  assert.deepEqual(diff.unknown, [], 'everything registered was measurable here');
+});
+
+test('recipe 12b: the growth kernel reports monotonic growth as evidence', () => {
+  const routeCache = new Map();
+  const tracker = createLeakTracker();
+  tracker.registerKernel(createCollectionGrowthKernel({
+    collections: { routeCache }, minSamples: 3, window: 5,
+  }));
+  for (let i = 0; i < 3; i++) { routeCache.set('/r' + i, i); tracker.audit(); }
+  const f = tracker.audit()[0];
+  assert.equal(f.reason, 'monotonic-growth');
+  assert.match(tracker.remediate(f), /evidence, not proof/);
 });

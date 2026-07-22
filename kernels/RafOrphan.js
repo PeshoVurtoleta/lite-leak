@@ -323,6 +323,13 @@ export function createRafOrphanKernel(options) {
       return findings;
     },
 
+    /**
+     * Live resources this kernel is watching. Part of the public kernel
+     * contract as of 1.6.0: snapshot() reads it, and a kernel that cannot
+     * answer omits it so the count reads null rather than zero.
+     */
+    count: function () { return chains.size; },
+
     advise(finding) {
       if (finding === null || finding.kind !== KIND) return null;
       if (finding.reason === 'no-owner-set') {

@@ -137,6 +137,8 @@ export interface LeakTracker<T = unknown> {
   auditByOwner(ownerHandle: unknown): KernelFinding[];
   /** Run audit() and collapse the result into clusters. See groupFindings. */
   auditGrouped(options?: GroupFindingsOptions): FindingGroup[];
+  /** Count live resources per kernel without emitting anything. */
+  snapshot(): Snapshot;
   /** M2: kernel-provided remediation advisory for a finding. */
   remediate(finding: KernelFinding): string;
 }
@@ -733,3 +735,68 @@ export function groupFindings<T = unknown>(
   findings: ReadonlyArray<KernelFinding<T>>,
   options?: GroupFindingsOptions
 ): FindingGroup<T>[];
+
+// -----------------------------------------------------------------
+// Growth detection (1.6.0)
+// -----------------------------------------------------------------
+
+export interface Snapshot {
+  readonly at: number;
+  /** Total live tracked handles (tracker.size()). */
+  readonly tracked: number;
+  /**
+   * Live resources per registered kernel name. `null` means the kernel does not
+   * implement `count()` -- which is NOT the same fact as zero.
+   */
+  readonly byKind: Readonly<Record<string, number | null>>;
+}
+
+export interface SnapshotDiff {
+  readonly tracked: number;
+  /** Per-kernel delta; `null` where either side was unmeasured. */
+  readonly byKind: Readonly<Record<string, number | null>>;
+  /** Kernel names that diffed to null. Check this, or you are asserting over a subset. */
+  readonly unknown: readonly string[];
+  /** How many kinds produced a real number. */
+  readonly measured: number;
+}
+
+/**
+ * Difference two snapshots. Any kind unmeasured on either side diffs to `null`
+ * and appears in `unknown`: treating an absent measurement as `0` would
+ * manufacture a clean delta out of nothing.
+ */
+export function diffSnapshots(before: Snapshot, after: Snapshot): SnapshotDiff;
+
+export interface CollectionGrowthKernelOptions {
+  /** Name -> collection exposing a numeric `size` (Map/Set) or `length` (Array). */
+  collections: Record<string, { size: number } | { length: number } | object>;
+  /** Sliding window length in samples, >= 2. Default 8. */
+  window?: number;
+  /** Samples required before reporting, >= 2 and <= window. Default 4. */
+  minSamples?: number;
+  /** Minimum increase across the window. Default 1. */
+  minGrowth?: number;
+  priority?: number;
+}
+
+export interface CollectionGrowthFinding<T = unknown> extends KernelFinding<T> {
+  readonly kind: 'collection-growth';
+  readonly reason: 'monotonic-growth';
+  readonly collection: string;
+  readonly samples: number;
+  readonly from: number;
+  readonly to: number;
+  readonly growth: number;
+}
+
+/**
+ * Detect collections that only ever get bigger. Samples once per `audit()` into
+ * a fixed-size sliding window.
+ *
+ * A finding is evidence, not proof: warmup is monotonic too. Because the window
+ * slides, a plateau clears the finding on its own.
+ */
+export function createCollectionGrowthKernel(
+  options: CollectionGrowthKernelOptions
+): Kernel;

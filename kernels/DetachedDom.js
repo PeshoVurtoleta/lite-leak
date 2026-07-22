@@ -180,6 +180,13 @@ export function createDetachedDomKernel(options) {
       return findings;
     },
 
+    /**
+     * Live resources this kernel is watching. Part of the public kernel
+     * contract as of 1.6.0: snapshot() reads it, and a kernel that cannot
+     * answer omits it so the count reads null rather than zero.
+     */
+    count: function () { return watched.size; },
+
     _watchedCount() { return watched.size; },
   };
 

@@ -3,6 +3,84 @@
 All notable changes to `@zakkster/lite-leak` will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] - 2026-07-21
+
+**Growth detection.** The leak class where nothing is orphaned: a Map that is
+correctly owned, correctly reachable, correctly cleaned up on disposal, and
+simply never stops growing. Every other kernel answers "was this released?".
+This release answers "is this getting bigger?", which is a different question
+and needs a different shape of API -- growth is a difference between moments, so
+one `audit()` can never see it.
+
+### Added -- `tracker.snapshot()` and `diffSnapshots(before, after)`
+
+Count live resources per kernel at a moment, then difference two moments:
+
+```js
+const before = tracker.snapshot();
+runInteraction();
+const diff = diffSnapshots(before, tracker.snapshot());
+// { tracked, byKind: { 'timer-orphan': 0 }, unknown: ['listener-orphan'], measured: 1 }
+```
+
+Exact, not heuristic, and the CI-gateable form of the question ("did this
+interaction add net resources?"). `snapshot()` emits nothing -- it is an
+observation, not an audit.
+
+**`null` is not zero, and the diff enforces it.** A kernel that does not
+implement `count()` reports `null`, and any kind that is `null` on either side
+diffs to `null` and is listed in `unknown`. Two cases this protects:
+
+- `listener-orphan` and `owner-cascade-orphan` have no countable registry, so
+  they report null forever. Reporting `0` would claim they are watching nothing
+  leak, which is a different fact from "cannot say".
+- A kernel registered *between* the snapshots was not at zero beforehand, it was
+  unobserved. Diffing it as `+N` would manufacture a measurement that never
+  happened.
+
+A gate asserting "this interaction added nothing" must check `unknown` as well
+as `byKind`, or it is asserting over a subset it cannot see.
+
+### Added -- `count()` on the kernel contract
+
+Optional, public, returns live resources or `null`. Implemented on nine of the
+eleven kernels by promoting their existing private probes. A kernel returning
+`NaN`, `Infinity`, a negative, a string, or throwing degrades to `null` rather
+than to a number the caller would trust.
+
+### Added -- `createCollectionGrowthKernel({ collections, ... })` (12th kernel)
+
+Records one sample per `audit()` into a fixed-size sliding window and reports
+`monotonic-growth` when the whole window is non-decreasing and has grown by at
+least `minGrowth`.
+
+**A finding here is evidence, not proof, and the reason name says so.** A cache
+filling during warmup is monotonic too; what separates it from a leak is that it
+plateaus. Because the window *slides*, a plateau clears the finding on its own --
+once every sample in the window is equal, growth across the window is zero and
+nothing is reported. That is the entire reason the window slides rather than
+accumulating from process start: a detector measuring from the first sample
+forever would flag every warmed cache in the application and never stop.
+
+- The window is a pre-allocated `Float64Array` shifted in place, so sampling
+  allocates nothing and **the growth detector cannot itself grow without bound**
+  -- pinned by a 500-sample test asserting the window stays at its configured
+  size.
+- `count()` returns the summed entries of every watched collection, so
+  `snapshot()` measures collection growth exactly, without the heuristic.
+- Collections are validated at construction: anything exposing neither a numeric
+  `size` nor `length` is rejected rather than silently watched and never
+  reported. Empty `collections` is rejected too -- a kernel watching nothing
+  would report clean forever.
+- `minSamples > window` is rejected as unsatisfiable.
+
+### Tests
+
+- **`test/growth.test.js`** -- 21 tests: null-vs-zero propagation in both
+  directions, a kernel registered mid-interval, junk and throwing `count()`
+  implementations, plateau self-clearing, a single eviction breaking
+  monotonicity, and the bounded-window assertion.
+
 ## [1.5.0] - 2026-07-21
 
 **Aggregation.** Four hundred listeners leaked from one component used to

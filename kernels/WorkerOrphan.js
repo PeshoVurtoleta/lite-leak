@@ -358,6 +358,13 @@ export function createWorkerOrphanKernel(options) {
       return null;
     },
 
+    /**
+     * Live resources this kernel is watching. Part of the public kernel
+     * contract as of 1.6.0: snapshot() reads it, and a kernel that cannot
+     * answer omits it so the count reads null rather than zero.
+     */
+    count: function () { return kernel._liveCount(); },
+
     _liveCount() {
       let n = 0;
       for (const ref of live) if (ref.deref() !== undefined) n++;

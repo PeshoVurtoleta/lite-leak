@@ -201,6 +201,13 @@ export function createAsyncRetentionKernel(options) {
       return null;
     },
 
+    /**
+     * Live resources this kernel is watching. Part of the public kernel
+     * contract as of 1.6.0: snapshot() reads it, and a kernel that cannot
+     * answer omits it so the count reads null rather than zero.
+     */
+    count: function () { return kernel._pendingCount(); },
+
     _pendingCount() { return controllers.size; },
   };
 

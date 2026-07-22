@@ -12,7 +12,7 @@
 import { createDisposalRegistry } from '@zakkster/lite-cleanup';
 import { getOwner, ownerOf, onCleanup, nodeId, describe } from '@zakkster/lite-signal';
 
-export const VERSION = '1.5.0';
+export const VERSION = '1.6.0';
 
 const EMPTY_OPTIONS = Object.freeze(Object.create(null));
 
@@ -152,7 +152,7 @@ const TRACKER_OPTION_KEYS = [
 /** Every key the kernel contract defines. @private */
 const KERNEL_KEYS = [
   'name', 'patchSurfaces', 'priority',
-  'install', 'uninstall', 'refine', 'audit', 'advise',
+  'install', 'uninstall', 'refine', 'audit', 'advise', 'count',
 ];
 
 /** Option keys accepted by `track()`. @private */
@@ -319,6 +319,68 @@ export function groupFindings(findings, options) {
     return a.key < b.key ? -1 : (a.key > b.key ? 1 : 0);
   });
   return out;
+}
+
+/**
+ * Difference two snapshots taken from the same tracker.
+ *
+ * The whole point of this function is what it refuses to do. A count is either
+ * a number or `null`, and `null` means *this kernel did not report*, which is
+ * not the same fact as zero. `listener-orphan` has no countable registry, so it
+ * reports null forever; a kernel registered between the two snapshots was not
+ * at zero beforehand, it was unobserved. Treating either as `0` would
+ * manufacture a clean `+0` delta out of an absence of measurement -- the exact
+ * failure this package exists to prevent.
+ *
+ * So any kind whose count is null on either side diffs to `null` and is listed
+ * in `unknown`. A gate asserting "this interaction added nothing" must check
+ * `unknown` as well as `byKind`, or it is asserting over a subset it cannot see.
+ *
+ * @param {object} before
+ * @param {object} after
+ * @returns {{tracked: number, byKind: object, unknown: string[], measured: number}}
+ */
+export function diffSnapshots(before, after) {
+  assertSnapshot(before, 'before');
+  assertSnapshot(after, 'after');
+
+  const byKind = Object.create(null);
+  const unknown = [];
+  let measured = 0;
+
+  const names = Object.create(null);
+  for (const k in before.byKind) names[k] = true;
+  for (const k in after.byKind) names[k] = true;
+
+  for (const name in names) {
+    const b = before.byKind[name];
+    const a = after.byKind[name];
+    if (typeof b !== 'number' || typeof a !== 'number') {
+      byKind[name] = null;
+      unknown.push(name);
+      continue;
+    }
+    byKind[name] = a - b;
+    measured++;
+  }
+  unknown.sort();
+
+  return {
+    tracked: after.tracked - before.tracked,
+    byKind: byKind,
+    unknown: unknown,
+    measured: measured,
+  };
+}
+
+/** @private */
+function assertSnapshot(v, which) {
+  if (v === null || typeof v !== 'object' || v.byKind === undefined ||
+      typeof v.tracked !== 'number') {
+    throw new TypeError(
+      'diffSnapshots: ' + which + ' must be a snapshot from tracker.snapshot()'
+    );
+  }
 }
 
 function snapshotOwnerPath(ownerHandle) {
@@ -631,7 +693,7 @@ export function createLeakTracker(options) {
         'install() -- it would claim those surfaces and patch nothing.'
       );
     }
-    for (const hook of ['install', 'uninstall', 'refine', 'audit', 'advise']) {
+    for (const hook of ['install', 'uninstall', 'refine', 'audit', 'advise', 'count']) {
       const v = kernel[hook];
       if (v !== undefined && v !== null && typeof v !== 'function') {
         throw new TypeError(
@@ -744,6 +806,39 @@ export function createLeakTracker(options) {
   }
 
   /**
+   * Count live resources per kernel, right now, without emitting anything.
+   *
+   * audit() answers "is anything wrong"; two snapshots answer "did this
+   * interaction add net resources", which is the question a CI gate can act on
+   * and the one a single audit cannot reach. Growth is a difference between two
+   * moments, so it needs two moments.
+   *
+   * A kernel that implements count() reports a number. A kernel that does not
+   * reports **null, never 0** -- see diffSnapshots.
+   */
+  function snapshot() {
+    const byKind = Object.create(null);
+    for (let i = 0; i < kernels.length; i++) {
+      const k = kernels[i];
+      let value = null;
+      if (typeof k.count === 'function') {
+        try {
+          const raw = k.count();
+          // A kernel returning junk must degrade to "did not report", not to a
+          // number the caller would trust.
+          if (typeof raw === 'number' && Number.isFinite(raw) && raw >= 0) {
+            value = raw;
+          }
+        } catch (err) {
+          routeError(err, null);
+        }
+      }
+      byKind[k.name] = value;
+    }
+    return { at: Date.now(), tracked: size(), byKind: byKind };
+  }
+
+  /**
    * Run audit() and collapse the result into clusters. Sugar over
    * groupFindings(audit(), options) -- see that function for why there is no
    * severity score.
@@ -805,6 +900,7 @@ export function createLeakTracker(options) {
     auditByKind: auditByKind,
     auditByOwner: auditByOwner,
     auditGrouped: auditGrouped,
+    snapshot: snapshot,
     remediate: remediate,
   };
 }
@@ -851,6 +947,7 @@ export { createWorkerOrphanKernel } from './kernels/WorkerOrphan.js';
 export { createAudioNodeKernel } from './kernels/AudioNode.js';
 export { createSocketOrphanKernel } from './kernels/SocketOrphan.js';
 export { createGlResourceOrphanKernel } from './kernels/GlResourceOrphan.js';
+export { createCollectionGrowthKernel } from './kernels/CollectionGrowth.js';
 export { createDefaultKernels } from './Presets.js';
 
 // -----------------------------------------------------------------

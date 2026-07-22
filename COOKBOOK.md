@@ -280,6 +280,35 @@ assert.deepEqual(tracker.audit(), []);
 assert.equal(tracker.size(), 0);
 ```
 
+### 12b. Assert an interaction adds nothing
+
+`audit()` answers "is anything wrong now". Some leaks are never orphaned -- a
+cache that grows one entry per navigation is owned, reachable, and fatal. Two
+snapshots answer the gateable question instead:
+
+```js
+const before = tracker.snapshot();
+for (let i = 0; i < 200; i++) { const v = mountRow(); v.dispose(); }
+const diff = diffSnapshots(before, tracker.snapshot());
+
+assert.equal(diff.byKind['timer-orphan'], 0);
+assert.deepEqual(diff.unknown, [], 'something could not be measured');
+```
+
+**Check `unknown`.** A kernel with no `count()` diffs to `null`, and so does one
+registered between the two snapshots -- it was not at zero beforehand, it was
+unobserved. Asserting only over `byKind` asserts over a subset you cannot see.
+
+For continuous monitoring rather than a gate, add the growth kernel:
+
+```js
+tracker.registerKernel(createCollectionGrowthKernel({ collections: { routeCache } }));
+```
+
+It samples once per `audit()` and reports `monotonic-growth`. Treat that as
+evidence, not proof: warmup grows monotonically too, and the sliding window
+clears the finding once the collection plateaus.
+
 ### 13. Run the whole thing from a CLI
 
 ```bash

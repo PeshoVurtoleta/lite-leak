@@ -1,4 +1,4 @@
-@zakkster/lite-leak v1.5.0
+@zakkster/lite-leak v1.6.0
 
 Zero-GC leak diagnostic for the @zakkster/lite-* ecosystem.
 Wraps lite-cleanup's FR primitive with owner-tree attribution and
@@ -221,6 +221,34 @@ createSocketOrphanKernel({ target?, warnOnNoOwner?, captureStacks?, priority? })
 All three hold their live registries as WeakRef behind a WeakMap, so the kernel
 never pins the resource it watches and a dropped resource still reaches the FR
 path for refine().
+
+GROWTH DETECTION (1.6.0)
+------------------------
+tracker.snapshot() -> { at, tracked, byKind }
+diffSnapshots(before, after) -> { tracked, byKind, unknown[], measured }
+  snapshot() EMITS NOTHING (observation, not audit).
+  byKind is keyed by kernel NAME. A kernel with no count() reports null.
+  NULL IS NOT ZERO: any kind null on either side diffs to null and is listed
+  in `unknown`. A kernel registered BETWEEN snapshots diffs to null, not +N --
+  it was unobserved, not at zero. Gates must check `unknown` as well as byKind.
+  count() is an optional PUBLIC kernel hook returning a non-negative finite
+  number or null. Junk (NaN/Infinity/negative/string) or a throw -> null.
+  Implemented on 9 of 12 kernels; listener-orphan and owner-cascade-orphan have
+  no countable registry.
+
+createCollectionGrowthKernel({ collections, window?, minSamples?, minGrowth?,
+                               priority? })
+  12th kernel. Samples once per audit() into a fixed-size sliding window
+  (Float64Array, shifted in place -- sampling allocates nothing and the window
+  never grows).
+  finding: { kind:'collection-growth', reason:'monotonic-growth', collection,
+             samples, from, to, growth }
+  EVIDENCE NOT PROOF: warmup is monotonic too. The window SLIDES, so a plateau
+  clears the finding on its own. Do not treat as a confirmed leak.
+  count() returns summed entries of all watched collections, so snapshot()
+  measures collection growth exactly without the heuristic.
+  Validated at construction: collections must expose numeric size or length;
+  empty collections rejected; minSamples > window rejected.
 
 AGGREGATION (1.5.0)
 -------------------
