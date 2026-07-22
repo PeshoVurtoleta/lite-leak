@@ -1,4 +1,4 @@
-@zakkster/lite-leak v1.6.1
+@zakkster/lite-leak v1.6.2
 
 Zero-GC leak diagnostic for the @zakkster/lite-* ecosystem.
 Wraps lite-cleanup's FR primitive with owner-tree attribution and
@@ -392,6 +392,7 @@ npm run coverage:check  -> gate 95 line / 85 branch / 90 funcs; in prepublishOnl
 Measured on OWN SOURCE ONLY: node_modules (vendored lite-cleanup) and test/ are
 excluded. Current: 98.05 line / 86.00 branch / 91.88 funcs. Coveralls via
 .github/workflows/coverage.yml. 85% branch floor matches gc-profiler.
-Known gap (roadmap, not fixed here): observer-orphan has no patch-claim
-hardening (no _claimPatchSurface/_restoreIfOurs), so it does not report
-patch-double-install or patch-layered.
+1.6.2: observer-orphan patch-claim hardening landed. It now claims each
+observer constructor per-target, emits patch-double-install on a contested
+surface, and uses _restoreIfOurs on uninstall (emits patch-layered, preserves a
+foreign wrapper). All eleven patching kernels now behave identically here.

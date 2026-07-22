@@ -16,6 +16,7 @@
  */
 
 import { getOwner, onCleanup, nodeId } from '@zakkster/lite-signal';
+import { _claimPatchSurface, _releasePatchSurface, _restoreIfOurs } from '../Leak.js';
 
 const KIND = 'observer-orphan';
 const EMPTY_OPTIONS = Object.freeze(Object.create(null));
@@ -44,6 +45,8 @@ export function createObserverOrphanKernel(options) {
   // observer instance -> state
   const observers = new Map();
   let originals = null;
+  let ours = null;
+  let claimed = null;
 
   function makePatchedCtor(kind, OriginalCtor) {
     return function PatchedObserver(cb, ctorOpts) {
@@ -113,21 +116,59 @@ export function createObserverOrphanKernel(options) {
     install(kernelCtx) {
       ctx = kernelCtx;
       originals = {};
+      ours = {};
+      claimed = [];
+      let contested = null;
       for (const kind of OBSERVER_KINDS) {
         const orig = target[kind];
-        if (typeof orig === 'function') {
-          originals[kind] = orig;
-          target[kind] = makePatchedCtor(kind, orig);
-        }
+        if (typeof orig !== 'function') continue;
+        // Claim each observer constructor per-target so a second kernel instance
+        // -- another tracker, a second bundled copy -- is reported loudly rather
+        // than silently layering and double-counting every observer.
+        if (_claimPatchSurface(target, kind)) claimed.push(kind);
+        else { if (contested === null) contested = []; contested.push(kind); }
+        originals[kind] = orig;
+        ours[kind] = makePatchedCtor(kind, orig);
+        target[kind] = ours[kind];
+      }
+      if (contested !== null) {
+        ctx.emitFinding({
+          kind: KIND,
+          reason: 'patch-double-install',
+          surfaces: contested,
+          detail: 'already patched by another lite-leak kernel instance; both are now ' +
+            'active, so observer instances will be counted twice',
+        });
       }
     },
 
     uninstall() {
       if (originals === null) return;
+      let clobbered = null;
       for (const kind of OBSERVER_KINDS) {
-        if (typeof originals[kind] === 'function') target[kind] = originals[kind];
+        if (typeof originals[kind] !== 'function') continue;
+        // Restore only if the slot is still ours. A third party that wrapped our
+        // constructor after us stays in place -- restoring unconditionally would
+        // destroy their wrapper and leave the call path broken.
+        if (!_restoreIfOurs(target, kind, ours[kind], originals[kind])) {
+          if (clobbered === null) clobbered = [];
+          clobbered.push(kind);
+        }
+      }
+      if (clobbered !== null && ctx !== null) {
+        ctx.emitFinding({
+          kind: KIND,
+          reason: 'patch-layered',
+          surfaces: clobbered,
+          detail: 'another wrapper was installed over these after this kernel; left in place',
+        });
+      }
+      if (claimed !== null) {
+        for (const kind of claimed) _releasePatchSurface(target, kind);
+        claimed = null;
       }
       originals = null;
+      ours = null;
       observers.clear();
       ctx = null;
     },

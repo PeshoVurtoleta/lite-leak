@@ -3,6 +3,40 @@
 All notable changes to `@zakkster/lite-leak` will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.2] - 2026-07-22
+
+**observer-orphan patch-claim hardening.** Closes the gap recorded in 1.6.1:
+`observer-orphan` was the one patching kernel with no
+`_claimPatchSurface`/`_restoreIfOurs`, so it silently double-counted and could
+destroy a third party's wrapper. It now matches the other ten patching kernels.
+
+### Fixed
+
+- **Two trackers over one runtime silently double-counted observers.** An app
+  tracker and a test-harness tracker (or two bundled copies) each patched
+  `MutationObserver`/`ResizeObserver`/`IntersectionObserver` with no claim, so
+  every observer was counted twice and neither tracker knew. The constructors
+  are now claimed per-target, and a second instance emits `patch-double-install`
+  instead of layering in silence.
+
+- **Uninstall could destroy a third party's wrapper.** The old teardown restored
+  the original constructor unconditionally, so a wrapper another library
+  installed over ours after us was overwritten -- breaking their call path.
+  Teardown now restores only if the slot is still ours (`_restoreIfOurs`), leaves
+  a foreign wrapper in place, and emits `patch-layered` to report it.
+
+These are the same two findings every other patching kernel already emits, so
+`groupFindings`, `auditByKind` and any `onFinding` consumer see observer-orphan
+behave consistently now. No API change; the kernel simply stops being the
+exception.
+
+### Tests
+
+- `test/coverage.test.js` regains the observer `patch-double-install` and
+  `patch-layered` cases (removed in 1.6.1 because the behaviour did not yet
+  exist), plus an assertion that a foreign wrapper survives uninstall.
+  observer-orphan branch coverage rises from 66.7% to 75.5% (c8).
+
 ## [1.6.1] - 2026-07-22
 
 **Coverage hardening + Coveralls.** No API change. Branch coverage rises from
