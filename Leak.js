@@ -12,7 +12,7 @@
 import { createDisposalRegistry } from '@zakkster/lite-cleanup';
 import { getOwner, ownerOf, onCleanup, nodeId, describe } from '@zakkster/lite-signal';
 
-export const VERSION = '1.6.0';
+export const VERSION = '1.6.1';
 
 const EMPTY_OPTIONS = Object.freeze(Object.create(null));
 

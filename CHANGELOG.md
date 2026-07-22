@@ -3,6 +3,42 @@
 All notable changes to `@zakkster/lite-leak` will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.1] - 2026-07-22
+
+**Coverage hardening + Coveralls.** No API change. Branch coverage rises from
+81.96% to 86.00% (98.05% line, 91.88% funcs), clearing the 85% gate with a real
+margin instead of sitting under it.
+
+### Added
+
+- **`npm run coverage`** -- writes `coverage/lcov.info` using the Node 22 test
+  runner's native lcov reporter. No `c8`/`nyc`; the zero-dependency rule holds.
+- **`npm run coverage:check`** -- enforces 95 line / 85 branch / 90 funcs and
+  runs in **`prepublishOnly`**, so a release cannot drop below the floor. The
+  85% branch floor matches lite-gc-profiler: the untaken branch is exactly where
+  a leak detector goes silently blind.
+- **`.github/workflows/coverage.yml`** -- runs the gate and uploads to
+  Coveralls. Coverage is measured on **own source only**: `node_modules` (the
+  vendored `lite-cleanup` peer) and `test/` are excluded, so the badge reflects
+  this package's code rather than its dependency's.
+- **`test/coverage.test.js`** -- 29 tests driving the three branch clusters the
+  1.2.0+ kernels inherited without tests: `patch-double-install` (two trackers
+  sharing one global surface), `patch-layered` (a foreign wrapper survives
+  uninstall), and every `advise()` reason, plus absent-global install-is-a-no-op
+  for each patching kernel.
+
+### Notes
+
+- The coverage config excludes the vendored `lite-cleanup` source, which was
+  otherwise dragging the reported branch number down with a dependency's
+  uncovered lines -- a measurement bug, not a coverage regression.
+- Surfaced while writing the tests, recorded here for the roadmap rather than
+  fixed in a coverage release: **`observer-orphan` has no patch-claim
+  hardening.** Unlike the other ten patching kernels it uses no
+  `_claimPatchSurface`/`_restoreIfOurs`, so it neither reports
+  `patch-double-install` nor protects a third party's wrapper on uninstall. A
+  behavioural fix belongs in its own minor.
+
 ## [1.6.0] - 2026-07-21
 
 **Growth detection.** The leak class where nothing is orphaned: a Map that is

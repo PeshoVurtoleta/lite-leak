@@ -1,6 +1,7 @@
 # @zakkster/lite-leak
 
 [![npm version](https://img.shields.io/npm/v/@zakkster/lite-leak.svg?style=for-the-badge&color=latest)](https://www.npmjs.com/package/@zakkster/lite-leak)
+[![Coverage Status](https://coveralls.io/repos/github/PeshoVurtoleta/lite-leak/badge.svg?branch=main)](https://coveralls.io/github/PeshoVurtoleta/lite-leak?branch=main)
 ![Zero-GC](https://img.shields.io/badge/Zero--GC-Hot%20path-00C853?style=for-the-badge&logo=leaf&logoColor=white)
 [![sponsor](https://img.shields.io/badge/sponsor-PeshoVurtoleta-ea4aaa.svg?logo=github)](https://github.com/sponsors/PeshoVurtoleta)
 [![npm bundle size](https://img.shields.io/bundlephobia/minzip/@zakkster/lite-leak?style=for-the-badge)](https://bundlephobia.com/result?p=@zakkster/lite-leak)
@@ -13,7 +14,7 @@
 
 `lite-leak` wraps [`@zakkster/lite-cleanup`](https://github.com/PeshoVurtoleta/lite-cleanup) with owner-tree attribution from [`@zakkster/lite-signal`](https://github.com/PeshoVurtoleta/lite-signal) 1.5.0+. Track a target for GC observation; if it survives past its owner's cleanup, you get a structured leak report with the owner path snapshot at track-time.
 
-**Status:** v1.6.0 -- **stable**. Twelve detection kernels shipped (raf-orphan in 1.1.0; worker-orphan, audio-node and socket-orphan in 1.2.0; gl-resource-orphan in 1.3.0). Full M2 audit API (`auditByKind`, `auditByOwner`, `remediate`). Four ecosystem sinks (`createTraceSink`, `createGenericSink`, `createProfilerSignalSink`, `createStudioSink`). Peer matrix validating owner-frame assumptions against the lite-signal 1.8.0 base and the rebuilt 1.9-1.12 line. Retained-heap budget suite. WHY-1.0.md and REJECTED.md ship in-tree. The `lite-leakforge` demo/toolkit product builds on top as a separate package.
+**Status:** v1.6.1 -- **stable**. Twelve detection kernels shipped (raf-orphan in 1.1.0; worker-orphan, audio-node and socket-orphan in 1.2.0; gl-resource-orphan in 1.3.0). Full M2 audit API (`auditByKind`, `auditByOwner`, `remediate`). Four ecosystem sinks (`createTraceSink`, `createGenericSink`, `createProfilerSignalSink`, `createStudioSink`). Peer matrix validating owner-frame assumptions against the lite-signal 1.8.0 base and the rebuilt 1.9-1.12 line. Retained-heap budget suite. WHY-1.0.md and REJECTED.md ship in-tree. The `lite-leakforge` demo/toolkit product builds on top as a separate package.
 
 - Single-file ESM, no bundled deps, ASCII-only source
 - Auto-untrack via `lite-signal`'s `onCleanup`: any FR-fired collection is *by definition* a target that outlived its owner
@@ -184,9 +185,13 @@ Measured on Node 22 under `--expose-gc`:
 ## Tests
 
 ```sh
-npm test           # basic + non-GC tests
-npm run test:gc    # full suite with --expose-gc
+npm test              # basic + non-GC tests
+npm run test:gc       # full suite with --expose-gc
+npm run coverage      # write coverage/lcov.info (Node native, no c8/nyc)
+npm run coverage:check # enforce 95 line / 85 branch / 90 funcs; runs in prepublishOnly
 ```
+
+Coverage is measured on **own source only** -- `node_modules` (the vendored `lite-cleanup` peer) and `test/` are excluded, so the badge reflects lite-leak's code, not its dependency's. `coverage:check` gates publishing; the branch floor of 85 matches lite-gc-profiler, because the untaken branch is where a leak detector goes quiet.
 
 Ten test files:
 

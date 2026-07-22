@@ -1,4 +1,4 @@
-@zakkster/lite-leak v1.6.0
+@zakkster/lite-leak v1.6.1
 
 Zero-GC leak diagnostic for the @zakkster/lite-* ecosystem.
 Wraps lite-cleanup's FR primitive with owner-tree attribution and
@@ -384,3 +384,14 @@ createStudioSink({ mount?, title?, maxLogRows?, zIndex? }) -> Sink + { mount(),
   unmount(), dispose() }
   DOM overlay in the visual style of @zakkster/lite-studio. Rolling log
   of leak events. No signals internally (ghost contract).
+
+COVERAGE (1.6.1)
+----------------
+npm run coverage        -> coverage/lcov.info (Node 22 native lcov, no c8/nyc)
+npm run coverage:check  -> gate 95 line / 85 branch / 90 funcs; in prepublishOnly
+Measured on OWN SOURCE ONLY: node_modules (vendored lite-cleanup) and test/ are
+excluded. Current: 98.05 line / 86.00 branch / 91.88 funcs. Coveralls via
+.github/workflows/coverage.yml. 85% branch floor matches gc-profiler.
+Known gap (roadmap, not fixed here): observer-orphan has no patch-claim
+hardening (no _claimPatchSurface/_restoreIfOurs), so it does not report
+patch-double-install or patch-layered.
