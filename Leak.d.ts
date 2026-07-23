@@ -800,3 +800,36 @@ export interface CollectionGrowthFinding<T = unknown> extends KernelFinding<T> {
 export function createCollectionGrowthKernel(
   options: CollectionGrowthKernelOptions
 ): Kernel;
+
+// -----------------------------------------------------------------
+// emitter-orphan kernel (1.7.0)
+// -----------------------------------------------------------------
+
+export interface EmitterOrphanKernelOptions {
+  /** The EventEmitter class whose prototype is instrumented. Required. */
+  EventEmitter: Function;
+  /**
+   * Warn when a listener is added outside any owner. Default FALSE -- unlike the
+   * browser kernels -- because ownerless adds are the norm in Node.
+   */
+  warnOnNoOwner?: boolean;
+  captureStacks?: boolean;
+  priority?: number;
+}
+
+export interface EmitterOrphanFinding<T = unknown> extends KernelFinding<T> {
+  readonly kind: 'emitter-orphan';
+  readonly reason:
+    | 'owner-disposed-listener-live'
+    | 'no-owner-add'
+    | 'patch-double-install'
+    | 'patch-layered';
+  readonly event?: string;
+}
+
+/**
+ * Detect Node EventEmitter listeners that outlive the owner that added them.
+ * `EventEmitter` is required (there is no global default). once()/
+ * prependOnceListener() are a documented non-goal.
+ */
+export function createEmitterOrphanKernel(options: EmitterOrphanKernelOptions): Kernel;

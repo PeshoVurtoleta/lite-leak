@@ -1,4 +1,4 @@
-@zakkster/lite-leak v1.6.2
+@zakkster/lite-leak v1.7.0
 
 Zero-GC leak diagnostic for the @zakkster/lite-* ecosystem.
 Wraps lite-cleanup's FR primitive with owner-tree attribution and
@@ -396,3 +396,17 @@ excluded. Current: 98.05 line / 86.00 branch / 91.88 funcs. Coveralls via
 observer constructor per-target, emits patch-double-install on a contested
 surface, and uses _restoreIfOurs on uninstall (emits patch-layered, preserves a
 foreign wrapper). All eleven patching kernels now behave identically here.
+
+EMITTER-ORPHAN (1.7.0) -- first Node kernel
+-------------------------------------------
+createEmitterOrphanKernel({ EventEmitter, warnOnNoOwner=false, captureStacks, priority })
+  EventEmitter REQUIRED (no global default; throws if absent, like gl needs gl).
+  Patches on/addListener/prependListener (add) + removeListener/off (reap) on the
+  prototype. Listener added inside an effect -> auto-removed on dispose; owner
+  disposed while still attached -> owner-disposed-listener-live.
+  warnOnNoOwner defaults FALSE (Node adds listeners everywhere; would be noise).
+  once()/prependOnceListener() SKIPPED (wrapper has .listener back-ref); a fired
+  once auto-removes, and listeners() unwraps it. NOT in createDefaultKernels
+  (needs EventEmitter arg). Same patch-claim hardening as siblings. WeakRefs on
+  both emitter and listener (never pins). Reasons: owner-disposed-listener-live,
+  no-owner-add (opt-in), patch-double-install, patch-layered.

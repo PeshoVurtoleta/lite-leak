@@ -12,7 +12,7 @@
 import { createDisposalRegistry } from '@zakkster/lite-cleanup';
 import { getOwner, ownerOf, onCleanup, nodeId, describe } from '@zakkster/lite-signal';
 
-export const VERSION = '1.6.2';
+export const VERSION = '1.7.0';
 
 const EMPTY_OPTIONS = Object.freeze(Object.create(null));
 
@@ -948,6 +948,7 @@ export { createAudioNodeKernel } from './kernels/AudioNode.js';
 export { createSocketOrphanKernel } from './kernels/SocketOrphan.js';
 export { createGlResourceOrphanKernel } from './kernels/GlResourceOrphan.js';
 export { createCollectionGrowthKernel } from './kernels/CollectionGrowth.js';
+export { createEmitterOrphanKernel } from './kernels/EmitterOrphan.js';
 export { createDefaultKernels } from './Presets.js';
 
 // -----------------------------------------------------------------

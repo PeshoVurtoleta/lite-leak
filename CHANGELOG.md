@@ -3,6 +3,55 @@
 All notable changes to `@zakkster/lite-leak` will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.0] - 2026-07-22
+
+**emitter-orphan kernel** -- the first Node-runtime kernel. Detects
+`EventEmitter` listeners that outlive the owner that added them, the classic Node
+leak Node's own `MaxListenersExceededWarning` misses.
+
+### Added
+
+- **`createEmitterOrphanKernel({ EventEmitter })`** -- patches
+  `on`/`addListener`/`prependListener` (adds) and `removeListener`/`off` (reaps)
+  on the given `EventEmitter` prototype. A listener added inside an effect is
+  removed automatically on disposal; one whose owner was disposed while it stayed
+  attached is reported as `owner-disposed-listener-live` -- classified by
+  ownership, not by a fixed listener count.
+
+  ```js
+  import { EventEmitter } from 'node:events';
+  import { createLeakTracker, createEmitterOrphanKernel } from '@zakkster/lite-leak';
+
+  const tracker = createLeakTracker();
+  tracker.registerKernel(createEmitterOrphanKernel({ EventEmitter }));
+  ```
+
+### Design
+
+- **`EventEmitter` is required, not defaulted.** There is no
+  `globalThis.EventEmitter`; defaulting to nothing would install a kernel that
+  patches nothing and reports clean forever. It throws if the class is missing --
+  the same "require the thing you cannot infer" rule as `gl-resource-orphan`.
+- **`warnOnNoOwner` defaults to FALSE here, unlike every browser kernel.** In
+  Node the runtime itself adds listeners outside any owner constantly, so warning
+  on ownerless adds would bury the signal. The owner-disposed case is the
+  actionable one and is always reported.
+- **`once`/`prependOnceListener` are a documented non-goal.** A once-listener
+  that fires auto-removes (not a leak); Node routes `once()` through `on()` with a
+  wrapper carrying a `.listener` back-reference, which the kernel detects and
+  skips so it never misreads attachment via the unwrapping `listeners()`.
+- **Not in `createDefaultKernels()`.** Like `gl-resource-orphan`, it needs an
+  argument (`EventEmitter`) the preset cannot supply, so it is composed
+  explicitly.
+- The kernel carries the same patch-claim hardening as the others
+  (`patch-double-install`, `patch-layered`) and holds WeakRefs to both emitter
+  and listener, so it never pins what it watches.
+
+- **`test/kernel-emitter-orphan.test.js`** -- 20 tests against the real Node
+  `EventEmitter` (not a mock): auto-cleanup on dispose, ownerless handling, reap
+  via removeListener/off, once-exclusion, the owner-disposed safety net, symbol
+  event names, patch-claim, and required-EventEmitter.
+
 ## [1.6.2] - 2026-07-22
 
 **observer-orphan patch-claim hardening.** Closes the gap recorded in 1.6.1:
