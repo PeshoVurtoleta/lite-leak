@@ -34,7 +34,8 @@
     "peers:matrix": "node scripts/peer-matrix.mjs",
     "test:coverage": "c8 --reporter=lcov --reporter=text --exclude='test/**' --exclude='**/node_modules/**' node --expose-gc --test 'test/*.test.js'",
     "coverage:check": "c8 --check-coverage --lines=95 --branches=85 --functions=90 --exclude='test/**' --exclude='**/node_modules/**' node --expose-gc --test 'test/*.test.js'",
-    "prepublishOnly": "npm run coverage:check"
+    "prepublishOnly": "npm run coverage:check",
+    "postpublish": "./postPublish/coveralls.sh"
   },
   "keywords": [
     "leak-detection",
